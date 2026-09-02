@@ -25,7 +25,7 @@ This is not a stop for the user. It means Codex must do the semantic handoff now
 
 1. Read `TASK_DIR/INSTRUCTIONS.md`.
 2. Read `TASK_DIR/manifest.json`.
-3. Read every `*.request.json` needed for the missing outputs.
+3. Read only the `*.request.json` files needed for the missing outputs. Responses whose exact `request_id` is already valid are intentionally reused and must not be regenerated.
 4. Honor each request's `required_model` exactly.
 5. Perform the reasoning yourself; do not call an external LLM API.
 6. Write the exact JSON response files under `RESPONSE_DIR`.
@@ -66,6 +66,7 @@ The controller automatically:
 - reuses only stages whose Stage Receipt is current and whose recorded outputs still match;
 - runs visual/transcription/evidence in order;
 - prepares reconstruction/completion/review handoffs when needed;
+- reuses exact, schema-valid request responses after interruption/restart;
 - applies completed handoff responses;
 - invalidates stale downstream stages when an upstream semantic stage is regenerated;
 - runs render and audit;
@@ -86,7 +87,9 @@ A current receipt binds:
 
 If any of these change, the stage is stale and must be regenerated. Reports describe business results; receipts describe execution identity.
 
-Every Codex response must echo the request's exact `request_id`. Never apply a response with a missing or stale `request_id`.
+Every Codex response must echo **that individual request's** exact `request_id`. Never apply a response with a missing or stale `request_id`. Do not assume all requests in one stage share the same ID.
+
+For reconstruction/completion, a merge response is reusable only when every chunk response it depends on was also reused. If any chunk is regenerated, regenerate the merge too.
 
 ## Model routing is mandatory
 

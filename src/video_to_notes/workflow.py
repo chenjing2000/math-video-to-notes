@@ -7,10 +7,12 @@ from typing import Any, Callable
 from .errors import StageError
 from .handoff import apply_completion, apply_reconstruction, apply_review, prepare_completion, prepare_reconstruction, prepare_review
 from .pipeline import Pipeline
-from .receipt import invalidate_from, is_current, write_receipt
+from .receipt import invalidate_from, is_current, write_receipt, request_id
 from .stages import StageContext
 from .util import atomic_write_json, read_json
 from .workspace import Workspace
+from .handoff.common import response_is_ready
+from .performance import write_performance_report
 
 HANDOFF_STAGES = ("reconstruction", "completion", "review")
 DETERMINISTIC_PREFIX = ("visual", "transcription", "evidence")
@@ -50,11 +52,13 @@ class CodexWorkflow:
             result = self._advance_handoff(stage)
             if result is not None:
                 self._write_report(result)
+                write_performance_report(self.ws.root)
                 return result
         for stage in DETERMINISTIC_SUFFIX:
             self._run_deterministic(stage)
         result = self._terminal_result()
         self._write_report(result)
+        write_performance_report(self.ws.root)
         return result
 
     def _run_deterministic(self, stage: str) -> None:
@@ -64,14 +68,22 @@ class CodexWorkflow:
         if is_current(self.ws.root, self.config, stage):
             return None
         manifest_path = self.ws.root / "tasks" / stage / "manifest.json"
-        if not manifest_path.exists():
+        current_input_id = request_id(self.ws.root, self.config, stage)
+        needs_prepare = not manifest_path.exists()
+        if not needs_prepare:
+            try:
+                existing_manifest = read_json(manifest_path)
+                needs_prepare = not isinstance(existing_manifest, dict) or str(existing_manifest.get("input_id", "")) != current_input_id
+            except Exception:
+                needs_prepare = True
+        if needs_prepare:
             self._prepare_handoff(stage)
         manifest = read_json(manifest_path)
         if not isinstance(manifest, dict):
             raise StageError(f"非法 handoff manifest: {manifest_path}")
         required = [str(x) for x in manifest.get("required_outputs", [])]
         response_dir = self.ws.root / "responses" / stage
-        missing = [name for name in required if not (response_dir / name).exists()]
+        missing = [name for name in required if not response_is_ready(self.ws.root, stage, manifest, name)]
         if missing:
             return WorkflowResult(
                 status="CODEX_TASK_REQUIRED",

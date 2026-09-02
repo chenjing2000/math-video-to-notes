@@ -45,6 +45,7 @@ workspace/<lesson>/latex/lecture.tex
 workspace/<lesson>/output/lecture.pdf
 workspace/<lesson>/reports/quality_report.md
 workspace/<lesson>/reports/workflow_report.json
+workspace/<lesson>/reports/performance_report.md
 ```
 
 详细说明见：
@@ -124,6 +125,7 @@ video-to-notes workflow "VIDEO"
 ```powershell
 video-to-notes status "VIDEO"
 video-to-notes codex-tasks "VIDEO"
+video-to-notes performance "VIDEO"
 video-to-notes visual "VIDEO"
 video-to-notes transcribe "VIDEO"
 video-to-notes evidence "VIDEO"
@@ -137,16 +139,30 @@ video-to-notes render "VIDEO"
 video-to-notes audit "VIDEO"
 ```
 
-## v1.2 Freeze 可靠性机制
+## v1.2.1 可靠性与性能观测
 
 - `stages/*.receipt.json`：唯一的阶段状态、缓存和依赖身份；
-- `request_id`：Codex handoff 响应防串台；
+- 每个 Codex request 使用独立 `request_id`，旧/串台响应不会被误用；
+- request 级断点恢复：完全相同且校验通过的 response 会直接复用，只重做缺失/失效请求；
+- reconstruction/completion 的 merge 只有在全部输入 chunk 都被复用时才会复用，避免旧 merge 混入新 chunk；
 - `lecture/reconstruction.json`、`completed.json`、`reviewed.json`：语义阶段不可变快照；
 - Sol 必须通过 `verified_supplements` 逐条确认 LLM 补充证明；
 - 同名但内容不同的视频自动分离 workspace；
 - prompts/default config/LaTeX template 内置为 package resources，不依赖当前工作目录；
+- `reports/performance_report.json/.md` 记录阶段耗时、request 输入规模、图片引用、复用次数与节省量；
 - `golden/` 保存两个真实视频的轻量回归契约。
 
+查看性能统计：
+
+```powershell
+video-to-notes performance "VIDEO"
+```
+
+重置某个视频的累计性能统计：
+
+```powershell
+video-to-notes performance "VIDEO" --reset
+```
 
 ## 测试
 
@@ -158,4 +174,4 @@ pytest -q tests --ignore=tests/integration
 
 包含 XeLaTeX 的集成测试建议逐文件运行，避免多个外部子进程堆在同一个 pytest 进程中。
 
-当前版本：`1.2.0`（个人自用冻结版）。
+当前版本：`1.2.1`。

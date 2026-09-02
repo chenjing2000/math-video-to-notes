@@ -101,7 +101,10 @@ def test_sprint10_rerun_completion_from_rendered_and_verify_derived_solution(tmp
     responses = ws / "responses" / "completion"
     responses.mkdir(parents=True, exist_ok=True)
     (responses / "chunk_0000.json").write_text(json.dumps(response, ensure_ascii=False), encoding="utf-8")
-    (responses / "completion.json").write_text(json.dumps(response, ensure_ascii=False), encoding="utf-8")
+    merge_task = json.loads((ws / "tasks" / "completion" / "merge.request.json").read_text(encoding="utf-8"))
+    merge_response = dict(response)
+    merge_response["request_id"] = merge_task["request_id"]
+    (responses / "completion.json").write_text(json.dumps(merge_response, ensure_ascii=False), encoding="utf-8")
 
     applied = _run(project_root, env, "--config", str(config), "complete", "apply", str(video))
     assert applied.returncode == 0, applied.stderr
@@ -120,7 +123,8 @@ def test_sprint10_rerun_completion_from_rendered_and_verify_derived_solution(tmp
     review_responses = ws / "responses" / "review"
     review_responses.mkdir(parents=True, exist_ok=True)
     for name in manifest["required_outputs"]:
-        payload = {"request_id": manifest["request_id"], "issues": []}
+        req = json.loads((ws / "tasks" / "review" / name.replace(".json", ".request.json")).read_text(encoding="utf-8"))
+        payload = {"request_id": req["request_id"], "issues": []}
         if name == "math.json":
             payload["verified_supplements"] = ["sup_001"]
         (review_responses / name).write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")

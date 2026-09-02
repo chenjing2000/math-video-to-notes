@@ -23,7 +23,7 @@ def _workspace(tmp_path: Path) -> Workspace:
 def _workflow(ws: Workspace) -> CodexWorkflow:
     return CodexWorkflow(
         workspace=ws,
-        config={"cache": {"enabled": True}},
+        config={},
         logger=logging.getLogger("test-workflow"),
     )
 
@@ -38,6 +38,7 @@ def test_workflow_prepares_and_reports_codex_task(tmp_path: Path, monkeypatch) -
     ws = _workspace(tmp_path)
     workflow = _workflow(ws)
     monkeypatch.setattr(workflow, "_run_deterministic", lambda stage: None)
+    monkeypatch.setattr("video_to_notes.workflow.request_id", lambda root, config, stage: f"input-{stage}")
 
     def fake_prepare(stage: str) -> None:
         task = ws.root / "tasks" / stage
@@ -45,10 +46,15 @@ def test_workflow_prepares_and_reports_codex_task(tmp_path: Path, monkeypatch) -
         task.mkdir(parents=True, exist_ok=True)
         response.mkdir(parents=True, exist_ok=True)
         atomic_write_json(task / "manifest.json", {
+            "input_id": f"input-{stage}",
             "required_outputs": ["chunk_0000.json", "lecture.json"],
+            "requests": {
+                "chunk_0000.json": {"request_id": "chunk-rid"},
+                "lecture.json": {"request_id": "merge-rid"},
+            },
         })
         atomic_write_json(task / "chunk_0000.request.json", {
-            "required_model": "terra",
+            "request_id": "chunk-rid", "required_model": "terra",
         })
 
     monkeypatch.setattr(workflow, "_prepare_handoff", fake_prepare)
@@ -68,15 +74,20 @@ def test_workflow_applies_ready_handoff_then_advances(tmp_path: Path, monkeypatc
     ws = _workspace(tmp_path)
     workflow = _workflow(ws)
     monkeypatch.setattr(workflow, "_run_deterministic", lambda stage: None)
+    monkeypatch.setattr("video_to_notes.workflow.request_id", lambda root, config, stage: f"input-{stage}")
 
     # Reconstruction is prepared and complete, so the controller should apply it.
     task = ws.root / "tasks" / "reconstruction"
     response = ws.root / "responses" / "reconstruction"
     task.mkdir(parents=True, exist_ok=True)
     response.mkdir(parents=True, exist_ok=True)
-    atomic_write_json(task / "manifest.json", {"required_outputs": ["lecture.json"]})
-    atomic_write_json(task / "merge.request.json", {"required_model": "terra"})
-    atomic_write_json(response / "lecture.json", {"ok": True})
+    atomic_write_json(task / "manifest.json", {
+        "input_id": "input-reconstruction",
+        "required_outputs": ["lecture.json"],
+        "requests": {"lecture.json": {"request_id": "recon-merge"}},
+    })
+    atomic_write_json(task / "merge.request.json", {"request_id": "recon-merge", "required_model": "terra"})
+    atomic_write_json(response / "lecture.json", {"request_id": "recon-merge", "ok": True})
 
     applied: list[str] = []
 

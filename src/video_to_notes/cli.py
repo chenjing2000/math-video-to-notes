@@ -18,6 +18,8 @@ from .handoff import (
     prepare_review, apply_review,
 )
 from .stages import StageContext
+from .performance import write_performance_report, reset_performance
+from .handoff.common import response_is_ready
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -109,6 +111,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_status = sub.add_parser("status", help="Show stage status.")
     p_status.add_argument("video")
+
+    p_perf = sub.add_parser("performance", help="Show or reset performance measurements for a lesson workspace.")
+    p_perf.add_argument("video")
+    p_perf.add_argument("--reset", action="store_true", help="Clear accumulated performance measurements.")
 
     p_reset = sub.add_parser("reset", help="Reset stage state/cache.")
     p_reset.add_argument("video")
@@ -254,7 +260,7 @@ def cmd_codex_tasks(video: Path, config: dict) -> int:
         import json
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         required = list(manifest.get("required_outputs", []))
-        missing = [name for name in required if not (response_dir / name).exists()]
+        missing = [name for name in required if not response_is_ready(ws.root, stage, manifest, name)]
         if is_current(ws.root, config, stage):
             label = "DONE"
         elif not missing:
@@ -279,6 +285,26 @@ def cmd_status(video: Path, config: dict) -> int:
         status = "done" if is_current(ws.root, config, stage) else ("stale" if receipt_path(ws.root, stage).exists() else "pending")
         print(f"{stage:<{width}}  {status}")
     return 0
+
+def cmd_performance(video: Path, config: dict, *, reset: bool = False) -> int:
+    ws = _resolve_existing_workspace(video, config)
+    if not ws.root.exists():
+        print(f"Workspace not initialized: {ws.root}", file=sys.stderr)
+        return 2
+    if reset:
+        reset_performance(ws.root)
+        print(f"Performance metrics reset: {ws.root}")
+        return 0
+    report = write_performance_report(ws.root)
+    llm = report.get("llm", {})
+    print(f"Workspace: {ws.root}")
+    print(f"Report: {ws.reports / 'performance_report.md'}")
+    print(f"LLM requests: {llm.get('requests_generated', 0)} generated / {llm.get('requests_reused', 0)} reused")
+    print(f"Executed input characters: {llm.get('input_characters', 0)}")
+    print(f"Avoided input characters: {llm.get('avoided_input_characters', 0)}")
+    print(f"Image references executed: {llm.get('images_sent', 0)}")
+    return 0
+
 
 def cmd_reset(args: argparse.Namespace, video: Path, config: dict) -> int:
     ws = _resolve_existing_workspace(video, config)
@@ -332,6 +358,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_codex_tasks(video, config)
         if args.command == "status":
             return cmd_status(video, config)
+        if args.command == "performance":
+            return cmd_performance(video, config, reset=bool(args.reset))
         if args.command == "reset":
             return cmd_reset(args, video, config)
 

@@ -71,12 +71,13 @@ def test_codex_handoff_reconstruction_prepare_apply(tmp_path):
     merge_task = json.loads((task_dir / "merge.request.json").read_text(encoding="utf-8"))
     assert chunk_task["required_model"] == "terra"
     assert merge_task["required_model"] == "terra"
-    rid = chunk_task["request_id"]
+    chunk_rid = chunk_task["request_id"]
+    merge_rid = merge_task["request_id"]
 
     responses = ws / "responses" / "reconstruction"
     responses.mkdir(parents=True, exist_ok=True)
     (responses / "chunk_0000.json").write_text(json.dumps({
-        "request_id": rid,
+        "request_id": chunk_rid,
         "topics": [{
             "title": "定义", "content": "定义内容", "origin": "video",
             "evidence_ids": ["ev_0000"], "status": "confirmed",
@@ -85,7 +86,7 @@ def test_codex_handoff_reconstruction_prepare_apply(tmp_path):
         "section_hints": [{"title": "第一节", "evidence_ids": ["ev_0000"]}],
     }, ensure_ascii=False), encoding="utf-8")
     (responses / "lecture.json").write_text(json.dumps({
-        "request_id": rid,
+        "request_id": merge_rid,
         "schema_version": "1.0",
         "stage": "reconstruction_draft",
         "metadata": {},
@@ -142,12 +143,15 @@ def test_codex_handoff_completion_and_review_apply(tmp_path):
     prep = _run(project_root, env, "--config", str(config), "complete", "prepare", str(video))
     assert prep.returncode == 0, prep.stderr
     cmanifest = json.loads((ws / "tasks" / "completion" / "manifest.json").read_text(encoding="utf-8"))
-    crid = cmanifest["request_id"]
+    cchunk = json.loads((ws / "tasks" / "completion" / "chunk_0000.request.json").read_text(encoding="utf-8"))
+    cmerge = json.loads((ws / "tasks" / "completion" / "merge.request.json").read_text(encoding="utf-8"))
+    crid = cchunk["request_id"]
+    cmerge_rid = cmerge["request_id"]
     cresp = ws / "responses" / "completion"
     cresp.mkdir(parents=True, exist_ok=True)
     item = {"target_id": "P01", "reason": "pedagogical_bridge", "why_needed": "补足一步", "content": "先建立对应关系。"}
     (cresp / "chunk_0000.json").write_text(json.dumps({"request_id": crid, "items": [item]}, ensure_ascii=False), encoding="utf-8")
-    (cresp / "completion.json").write_text(json.dumps({"request_id": crid, "items": [item]}, ensure_ascii=False), encoding="utf-8")
+    (cresp / "completion.json").write_text(json.dumps({"request_id": cmerge_rid, "items": [item]}, ensure_ascii=False), encoding="utf-8")
     applied = _run(project_root, env, "--config", str(config), "complete", "apply", str(video))
     assert applied.returncode == 0, applied.stderr
 
@@ -167,14 +171,15 @@ def test_codex_handoff_completion_and_review_apply(tmp_path):
     rresp = ws / "responses" / "review"
     rresp.mkdir(parents=True, exist_ok=True)
     for name in manifest["required_outputs"]:
+        request = json.loads((review_tasks / name.replace(".json", ".request.json")).read_text(encoding="utf-8"))
         if name == "math.json":
-            payload = {"request_id": manifest["request_id"], "verified_supplements": [], "issues": [{
+            payload = {"request_id": request["request_id"], "verified_supplements": [], "issues": [{
                 "target_id": "P01.teacher_answer", "severity": "warning",
                 "label": "possible_teacher_error", "message": "答案疑似有误。",
                 "source_value": "48°", "review_value": "46°",
             }]}
         else:
-            payload = {"request_id": manifest["request_id"], "issues": []}
+            payload = {"request_id": request["request_id"], "issues": []}
         (rresp / name).write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     applied = _run(project_root, env, "--config", str(config), "review", "apply", str(video))
     assert applied.returncode == 0, applied.stderr

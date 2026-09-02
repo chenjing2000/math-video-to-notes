@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -16,6 +17,7 @@ from .completion import run_completion_stage
 from .review import run_review_stage
 from .render import run_render_stage
 from .audit import run_audit_stage
+from .performance import record_stage
 
 
 class Pipeline:
@@ -53,6 +55,7 @@ class Pipeline:
 
             if is_current(self.workspace_root, self.config, stage):
                 self.logger.info("[RECEIPT] %s reused", stage)
+                record_stage(self.workspace_root, stage, 0.0, reused=True)
                 continue
 
             handler = self.IMPLEMENTED_HANDLERS.get(stage)
@@ -60,9 +63,11 @@ class Pipeline:
                 raise StageError(f"Unsupported stage: {stage}")
             invalidate_from(self.workspace_root, stage)
             self.logger.info("[%s] starting", stage)
+            started = time.perf_counter()
             try:
                 handler(StageContext(stage=stage, workspace_root=self.workspace_root, config=self.config, logger=self.logger))
                 write_receipt(self.workspace_root, self.config, stage)
+                record_stage(self.workspace_root, stage, time.perf_counter() - started, reused=False)
                 self.logger.info("[%s] done", stage)
             except Exception as exc:
                 self.logger.exception("[%s] failed: %s", stage, exc)

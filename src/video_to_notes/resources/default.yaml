@@ -10,10 +10,6 @@ logging:
   console: true
   file: true
 
-cache:
-  enabled: true
-  hash_algorithm: "sha256"
-
 codex:
   model_routing:
     reconstruction: "terra"
@@ -27,6 +23,14 @@ llm:
   # Default: Codex performs semantic reconstruction/review from generated task files.
   # Set mode to "api" only when you explicitly want autonomous API execution.
   mode: "codex_handoff"
+
+performance:
+  packet_warning_chars:
+    reconstruction: 30000
+    completion: 20000
+    factual_review: 15000
+    math_review: 20000
+    pedagogical_review: 15000
 
 tools:
   ffmpeg: "auto"

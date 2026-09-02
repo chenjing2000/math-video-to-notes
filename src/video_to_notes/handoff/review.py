@@ -6,25 +6,42 @@ from typing import Any
 
 from ..config import resolve_resource_path
 from ..errors import StageError
-from ..reconstruction.prompts import load_prompts
+from ..performance import record_handoff_apply, record_handoff_prepare
+from ..receipt import request_id
 from ..reconstruction.figures import bind_problem_figures
+from ..reconstruction.prompts import load_prompts
 from ..review.evidence_support import collect_evidence_ids_from_targets, select_evidence
 from ..review.routing import collect_all_target_ids, collect_factual_targets, collect_math_targets
 from ..review.validation import assign_issue_ids, validate_raw_issues
-from ..util import atomic_write_json, read_json
-from ..receipt import request_id
+from ..util import atomic_write_json, read_json, stable_json_hash
+from .common import (
+    load_response,
+    manifest_request_id,
+    prepare_task_directories,
+    response_root,
+    task_root,
+    write_instructions,
+    write_task_file,
+    require_request_id,
+)
 from .model_routing import resolve_required_model, resolved_model_routing
-from .common import ensure_clean_dir, load_response, response_root, task_root, write_instructions, write_task_file, require_request_id
 
 
-def _project_root(config: dict[str, Any]) -> Path:
-    configured = config.get("project", {}).get("project_root")
-    return Path(str(configured)).expanduser().resolve() if configured else Path.cwd().resolve()
+def _target_ids(items: list[dict[str, Any]]) -> list[str]:
+    out: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        for key in ("id", "target_id"):
+            value = str(item.get(key, ""))
+            if value and value not in out:
+                out.append(value)
+    return out
 
 
 def prepare_review(*, workspace_root: Path, config: dict[str, Any]) -> dict[str, Any]:
     cfg = config["review"]
-    rid = request_id(workspace_root, config, "review")
+    input_id = request_id(workspace_root, config, "review")
     lecture_path = workspace_root / "lecture" / "lecture.json"
     timeline_path = workspace_root / "evidence" / "timeline.json"
     if not lecture_path.exists() or not timeline_path.exists():
@@ -44,15 +61,11 @@ def prepare_review(*, workspace_root: Path, config: dict[str, Any]) -> dict[str,
         )
         atomic_write_json(lecture_path, lecture)
 
-    project_root = _project_root(config)
     prompt_path = resolve_resource_path(cfg.get("prompts_file", "package:prompts.yaml"), default_name="prompts.yaml")
     prompts = load_prompts(prompt_path.resolve()).get("review", {})
-
-    tasks = task_root(workspace_root, "review")
-    responses = response_root(workspace_root, "review")
-    ensure_clean_dir(tasks)
-    ensure_clean_dir(responses)
-    required: list[str] = []
+    valid_target_ids = collect_all_target_ids(lecture)
+    requests: dict[str, dict[str, Any]] = {}
+    validators: dict[str, Any] = {}
 
     factual_cfg = cfg.get("factual", {})
     if bool(factual_cfg.get("enabled", True)):
@@ -62,16 +75,22 @@ def prepare_review(*, workspace_root: Path, config: dict[str, Any]) -> dict[str,
             always_review_problem_fields={str(x) for x in factual_cfg.get("always_review_problem_fields", ["statement", "teacher_solution", "teacher_answer"])},
         )
         if factual_targets:
-            evidence = select_evidence(timeline, evidence_ids=collect_evidence_ids_from_targets(factual_targets))
+            evidence_ids = collect_evidence_ids_from_targets(factual_targets)
+            evidence = select_evidence(timeline, evidence_ids=evidence_ids)
             prompt = prompts.get("factual", {})
             user = str(prompt["user"]).replace("{{TARGETS_JSON}}", json.dumps(factual_targets, ensure_ascii=False, indent=2)).replace("{{EVIDENCE_JSON}}", json.dumps(evidence, ensure_ascii=False, indent=2))
-            write_task_file(tasks / "factual.request.json", {
-                "schema_version": "1.0", "request_id": rid, "task_type": "review_factual",
-                "required_model": resolve_required_model(config, "factual"),
-                "system": str(prompt["system"]), "user": user,
-                "output_file": "responses/review/factual.json",
+            model = resolve_required_model(config, "factual")
+            rid = request_id(workspace_root, config, "review", extra={
+                "task_type": "review_factual", "model": model,
+                "system": str(prompt["system"]), "user_hash": stable_json_hash(user),
             })
-            required.append("factual.json")
+            requests["factual.json"] = {
+                "schema_version": "1.1", "request_id": rid, "task_type": "review_factual",
+                "required_model": model, "system": str(prompt["system"]), "user": user,
+                "packet_provenance": {"source_ids": _target_ids(factual_targets) + sorted(evidence_ids), "frame_ids": []},
+                "output_file": "responses/review/factual.json",
+            }
+            validators["factual.json"] = lambda data: validate_raw_issues(data.get("issues"), review_type="factual", valid_target_ids=valid_target_ids, reject_unreferenced_targets=bool(cfg.get("reject_unreferenced_targets", True)))
 
     math_cfg = cfg.get("math", {})
     if bool(math_cfg.get("enabled", True)):
@@ -79,13 +98,23 @@ def prepare_review(*, workspace_root: Path, config: dict[str, Any]) -> dict[str,
         if math_targets:
             prompt = prompts.get("math", {})
             user = str(prompt["user"]).replace("{{TARGETS_JSON}}", json.dumps(math_targets, ensure_ascii=False, indent=2))
-            write_task_file(tasks / "math.request.json", {
-                "schema_version": "1.0", "request_id": rid, "task_type": "review_math",
-                "required_model": resolve_required_model(config, "math"),
-                "system": str(prompt["system"]), "user": user,
-                "output_file": "responses/review/math.json",
+            model = resolve_required_model(config, "math")
+            rid = request_id(workspace_root, config, "review", extra={
+                "task_type": "review_math", "model": model,
+                "system": str(prompt["system"]), "user_hash": stable_json_hash(user),
             })
-            required.append("math.json")
+            requests["math.json"] = {
+                "schema_version": "1.1", "request_id": rid, "task_type": "review_math",
+                "required_model": model, "system": str(prompt["system"]), "user": user,
+                "packet_provenance": {"source_ids": _target_ids(math_targets), "frame_ids": []},
+                "output_file": "responses/review/math.json",
+            }
+            def validate_math(data: dict[str, Any]) -> None:
+                values = data.get("verified_supplements", [])
+                if not isinstance(values, list):
+                    raise StageError("math review.verified_supplements 必须为 list。")
+                validate_raw_issues(data.get("issues"), review_type="math", valid_target_ids=valid_target_ids, reject_unreferenced_targets=bool(cfg.get("reject_unreferenced_targets", True)))
+            validators["math.json"] = validate_math
 
     pedagogical_cfg = cfg.get("pedagogical", {})
     if bool(pedagogical_cfg.get("enabled", True)) and bool(pedagogical_cfg.get("whole_lecture", True)):
@@ -99,44 +128,63 @@ def prepare_review(*, workspace_root: Path, config: dict[str, Any]) -> dict[str,
             "summary": lecture.get("summary", []),
         }
         user = str(prompt["user"]).replace("{{LECTURE_JSON}}", json.dumps(payload, ensure_ascii=False, indent=2))
-        write_task_file(tasks / "pedagogical.request.json", {
-            "schema_version": "1.0", "request_id": rid, "task_type": "review_pedagogical",
-            "required_model": resolve_required_model(config, "pedagogical"),
-            "system": str(prompt["system"]), "user": user,
-            "output_file": "responses/review/pedagogical.json",
+        model = resolve_required_model(config, "pedagogical")
+        rid = request_id(workspace_root, config, "review", extra={
+            "task_type": "review_pedagogical", "model": model,
+            "system": str(prompt["system"]), "user_hash": stable_json_hash(user),
         })
-        required.append("pedagogical.json")
+        requests["pedagogical.json"] = {
+            "schema_version": "1.1", "request_id": rid, "task_type": "review_pedagogical",
+            "required_model": model, "system": str(prompt["system"]), "user": user,
+            "packet_provenance": {"source_ids": sorted(valid_target_ids), "frame_ids": []},
+            "output_file": "responses/review/pedagogical.json",
+        }
+        validators["pedagogical.json"] = lambda data: validate_raw_issues(data.get("issues"), review_type="pedagogical", valid_target_ids=valid_target_ids, reject_unreferenced_targets=bool(cfg.get("reject_unreferenced_targets", True)))
+
+    tasks = task_root(workspace_root, "review")
+    responses = response_root(workspace_root, "review")
+    reusable = {name: (str(req["request_id"]), validators.get(name)) for name, req in requests.items()}
+    reused = prepare_task_directories(tasks, responses, reusable=reusable)
+
+    for output_name, request in requests.items():
+        write_task_file(tasks / output_name.replace(".json", ".request.json"), request)
 
     manifest = {
-        "schema_version": "1.0",
-        "request_id": rid,
+        "schema_version": "1.1",
+        "input_id": input_id,
+        "request_id": input_id,
         "stage": "review",
         "mode": "codex_handoff",
         "model_routing": resolved_model_routing(config),
-        "required_outputs": required,
-        "valid_target_ids": sorted(collect_all_target_ids(lecture)),
+        "required_outputs": list(requests.keys()),
+        "requests": {
+            output: {"request_id": str(req["request_id"]), "request_file": output.replace(".json", ".request.json")}
+            for output, req in requests.items()
+        },
+        "reused_outputs": sorted(reused),
+        "valid_target_ids": sorted(valid_target_ids),
     }
     write_task_file(tasks / "manifest.json", manifest)
-    write_instructions(tasks / "INSTRUCTIONS.md", """# Codex Handoff — Review
+    record_handoff_prepare(workspace_root, "review", input_id=input_id, requests=requests, reused_outputs=reused, warning_thresholds=config.get("performance", {}).get("packet_warning_chars", {}))
 
-处理本目录中所有 `*.request.json`，每个任务独立完成，并把纯 JSON 响应写入 `responses/review/` 对应文件。
+    write_instructions(tasks / "INSTRUCTIONS.md", f"""# Codex Handoff — Review
+
+处理本目录中所有尚未有合法 response 的 `*.request.json`；已有 request_id 完全一致的 response 直接复用。
 
 模型路由：
-- factual：`luna-high`（Luna 最低只允许 High）。
-- math：`sol`。
-- pedagogical：`terra`。
-
-每个 `*.request.json` 都包含 `required_model`；处理该任务前必须使用对应模型。
+- factual：`luna-high`
+- math：`sol`
+- pedagogical：`terra`
 
 职责严格分离：
 - factual：只核对是否忠实于视频 Evidence，不判断数学正确性。
-- math：只检查数学正确性。对 `type=derived_solution` 必须从题目条件独立验算；发现问题时优先把 issue 绑定到具体 supplement id。老师疑似错误必须标记 `possible_teacher_error`，保留 source_value/review_value，不修改原文。
-- pedagogical：检查结构、图文完整性与独立可读性；“如图”却无 figure、证明题只有答案无完整解答都应报告。
+- math：只检查数学正确性。`derived_solution` 必须从题目条件独立验算。
+- pedagogical：检查结构、图文完整性与独立可读性。
 
-每个响应必须原样回显 request JSON 中的 `request_id`。
-math 响应还必须返回 `verified_supplements`：逐条列出已经独立验算并确认正确的 `derived_solution` supplement id；不能用“没有 issue”代替显式确认。
-没有问题时 factual/pedagogical 返回 `{"request_id":"...","issues":[]}`；math 返回 `{"request_id":"...","verified_supplements":[...],"issues":[]}`。
-完成后执行 `video-to-notes review apply VIDEO`。
+每个响应必须原样回显**该 request 自己的** `request_id`。
+math 响应还必须返回 `verified_supplements`，不能用“没有 issue”代替显式确认。
+
+prepare 已复用 {len(reused)} 个合法 reviewer response。
 """)
     return manifest
 
@@ -159,7 +207,7 @@ def apply_review(*, workspace_root: Path, config: dict[str, Any]) -> dict[str, A
     for name in required:
         review_type = Path(name).stem
         raw = load_response(responses / name, f"{review_type} review")
-        require_request_id(raw, str(manifest.get("request_id", "")), f"{review_type} review")
+        require_request_id(raw, manifest_request_id(manifest, name), f"{review_type} review")
         if review_type == "math":
             values = raw.get("verified_supplements", [])
             if not isinstance(values, list):
@@ -173,8 +221,7 @@ def apply_review(*, workspace_root: Path, config: dict[str, Any]) -> dict[str, A
         ))
     issues = assign_issue_ids(all_issues)
 
-    math_review_ran = "math.json" in required
-    if math_review_ran:
+    if "math.json" in required:
         math_issues = [x for x in issues if x.get("review_type") == "math"]
         derived_ids = {str(x.get("id", "")) for x in lecture.get("supplements", []) if isinstance(x, dict) and x.get("type") == "derived_solution"}
         unknown_verified = verified_supplements - derived_ids
@@ -215,13 +262,10 @@ def apply_review(*, workspace_root: Path, config: dict[str, Any]) -> dict[str, A
         "verified_derived_solutions": sum(1 for x in lecture.get("supplements", []) if x.get("type") == "derived_solution" and x.get("math_review_status") == "verified"),
         "quality": {
             "complete": all(x.get("math_review_status") == "verified" for x in lecture.get("supplements", []) if isinstance(x, dict) and x.get("type") == "derived_solution")
-            and not any(
-                x.get("status") == "open"
-                and (x.get("severity") == "error" or x.get("label") == "possible_teacher_error")
-                for x in issues
-            ),
+            and not any(x.get("status") == "open" and (x.get("severity") == "error" or x.get("label") == "possible_teacher_error") for x in issues),
         },
         "output": str(lecture_path),
     }
     atomic_write_json(workspace_root / "reports" / "review_report.json", report)
+    record_handoff_apply(workspace_root, "review", responses)
     return report

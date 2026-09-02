@@ -23,10 +23,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "console": True,
         "file": True,
     },
-    "cache": {
-        "enabled": True,
-        "hash_algorithm": "sha256",
-    },
     "codex": {
         "model_routing": {
             "reconstruction": "terra",
@@ -40,6 +36,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "llm": {
         "mode": "codex_handoff",
+    },
+    "performance": {
+        "packet_warning_chars": {
+            "reconstruction": 30000,
+            "completion": 20000,
+            "factual_review": 15000,
+            "math_review": 20000,
+            "pedagogical_review": 15000,
+        },
     },
     "tools": {
         "ffmpeg": "auto",

@@ -106,7 +106,7 @@ Only these explicit `api` commands use each stage's `llm.provider` settings and 
 
 ## State safety
 
-Running `prepare` resets that stage and all downstream stages. It also clears stale task responses for that stage. This prevents old completion/review/render/audit products from being reused after an upstream Codex task changes.
+Running `prepare` resets that stage and all downstream Stage Receipts. For the current handoff it preserves only response files whose **individual request_id still matches and whose schema validates**; stale responses are removed. Reconstruction/completion merge responses are preserved only when all of their input chunks are also preserved. This gives request-level resume without mixing old semantic outputs with new inputs.
 
 ## Sprint 10 additions
 

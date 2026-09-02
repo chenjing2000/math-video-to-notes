@@ -4,25 +4,27 @@ import json
 from pathlib import Path
 from typing import Any
 
-from ..completion.chunking import make_completion_chunks
 from ..completion.assessment import infer_requires_solution, infer_solution_completeness
+from ..completion.chunking import make_completion_chunks
 from ..completion.validation import collect_valid_targets, validate_completion_items
 from ..config import resolve_resource_path
 from ..errors import StageError
-from ..reconstruction.prompts import load_prompts, render
-from ..reconstruction.figures import bind_problem_figures
-from ..util import atomic_write_json, read_json
+from ..performance import record_handoff_apply, record_handoff_prepare
 from ..receipt import request_id
-from .model_routing import resolve_required_model, resolved_model_routing
+from ..reconstruction.figures import bind_problem_figures
+from ..reconstruction.prompts import load_prompts, render
+from ..util import atomic_write_json, read_json, stable_json_hash
 from .common import (
-    ensure_clean_dir,
     load_response,
+    manifest_request_id,
+    prepare_task_directories,
     response_root,
     task_root,
     write_instructions,
     write_task_file,
     require_request_id,
 )
+from .model_routing import resolve_required_model, resolved_model_routing
 
 
 def _project_root(config: dict[str, Any]) -> Path:
@@ -30,9 +32,19 @@ def _project_root(config: dict[str, Any]) -> Path:
     return Path(str(configured)).expanduser().resolve() if configured else Path.cwd().resolve()
 
 
+def _chunk_source_ids(chunk: dict[str, Any]) -> list[str]:
+    out: list[str] = []
+    for item in chunk.get("items", []):
+        if isinstance(item, dict):
+            value = str(item.get("id", ""))
+            if value and value not in out:
+                out.append(value)
+    return out
+
+
 def prepare_completion(*, workspace_root: Path, config: dict[str, Any]) -> dict[str, Any]:
     cfg = config["completion"]
-    rid = request_id(workspace_root, config, "completion")
+    input_id = request_id(workspace_root, config, "completion")
     required_model = resolve_required_model(config, "completion")
     lecture_path = workspace_root / "lecture" / "lecture.json"
     if not lecture_path.exists():
@@ -55,7 +67,6 @@ def prepare_completion(*, workspace_root: Path, config: dict[str, Any]) -> dict[
             )
             atomic_write_json(lecture_path, lecture)
 
-    project_root = _project_root(config)
     prompt_path = resolve_resource_path(cfg.get("prompts_file", "package:prompts.yaml"), default_name="prompts.yaml")
     prompts = load_prompts(prompt_path.resolve()).get("completion", {})
     analyze = prompts.get("analyze", {})
@@ -63,74 +74,117 @@ def prepare_completion(*, workspace_root: Path, config: dict[str, Any]) -> dict[
     if not isinstance(analyze, dict) or not isinstance(merge, dict):
         raise StageError("prompts.yaml 缺少 completion.analyze/merge。")
 
-    chunks = make_completion_chunks(
-        lecture,
-        max_items_per_call=int(cfg.get("max_items_per_call", 12)),
-    )
-    tasks = task_root(workspace_root, "completion")
-    responses = response_root(workspace_root, "completion")
-    ensure_clean_dir(tasks)
-    ensure_clean_dir(responses)
+    chunks = make_completion_chunks(lecture, max_items_per_call=int(cfg.get("max_items_per_call", 12)))
+    valid_targets = collect_valid_targets(lecture)
+    requests: dict[str, dict[str, Any]] = {}
+    reusable: dict[str, tuple[str, Any]] = {}
+    chunk_request_ids: list[str] = []
+
+    def validate_items_response(data: dict[str, Any]) -> None:
+        validate_completion_items(
+            data.get("items"),
+            valid_targets=valid_targets,
+            reject_unreferenced_targets=bool(cfg.get("reject_unreferenced_targets", True)),
+        )
 
     for index, chunk in enumerate(chunks):
-        user = render(
-            str(analyze["user"]),
-            "LECTURE_JSON",
-            json.dumps({"items": chunk.get("items", [])}, ensure_ascii=False, indent=2),
-        )
-        write_task_file(tasks / f"chunk_{index:04d}.request.json", {
-            "schema_version": "1.0",
+        payload = {"items": chunk.get("items", [])}
+        user = render(str(analyze["user"]), "LECTURE_JSON", json.dumps(payload, ensure_ascii=False, indent=2))
+        rid = request_id(workspace_root, config, "completion", extra={
+            "task_type": "completion_chunk",
+            "chunk_index": index,
+            "model": required_model,
+            "system": str(analyze["system"]),
+            "user_hash": stable_json_hash(user),
+        })
+        chunk_request_ids.append(rid)
+        output_name = f"chunk_{index:04d}.json"
+        request = {
+            "schema_version": "1.1",
             "request_id": rid,
             "task_type": "completion_chunk",
             "required_model": required_model,
             "chunk_index": index,
             "system": str(analyze["system"]),
             "user": user,
-            "output_file": f"responses/completion/chunk_{index:04d}.json",
-        })
+            "packet_provenance": {"source_ids": _chunk_source_ids(chunk), "frame_ids": []},
+            "output_file": f"responses/completion/{output_name}",
+        }
+        requests[output_name] = request
+        reusable[output_name] = (rid, validate_items_response)
 
-    write_task_file(tasks / "merge.request.json", {
-        "schema_version": "1.0",
+    merge_rid = request_id(workspace_root, config, "completion", extra={
+        "task_type": "completion_merge",
+        "model": required_model,
+        "system": str(merge["system"]),
+        "user_template": str(merge["user"]),
+        "chunk_request_ids": chunk_request_ids,
+    })
+    merge_request = {
+        "schema_version": "1.1",
+        "request_id": merge_rid,
         "task_type": "completion_merge",
         "required_model": required_model,
         "system": str(merge["system"]),
         "user_template": str(merge["user"]),
         "input_files": [f"responses/completion/chunk_{i:04d}.json" for i in range(len(chunks))],
+        "input_request_ids": chunk_request_ids,
+        "packet_provenance": {"source_ids": sorted(valid_targets), "frame_ids": []},
         "output_file": "responses/completion/completion.json",
-    })
+    }
+    requests["completion.json"] = merge_request
+    reusable["completion.json"] = (merge_rid, validate_items_response)
+
+    tasks = task_root(workspace_root, "completion")
+    responses = response_root(workspace_root, "completion")
+    reused = prepare_task_directories(tasks, responses, reusable=reusable)
+    # A merge response is reusable only when every chunk response it was based on
+    # was also preserved. If any chunk must be regenerated, force a new merge.
+    chunk_outputs = {f"chunk_{i:04d}.json" for i in range(len(chunks))}
+    if not chunk_outputs.issubset(reused):
+        (responses / "completion.json").unlink(missing_ok=True)
+        reused.discard("completion.json")
+
+    for output_name, request in requests.items():
+        filename = "merge.request.json" if output_name == "completion.json" else output_name.replace(".json", ".request.json")
+        write_task_file(tasks / filename, request)
+
     manifest = {
-        "schema_version": "1.0",
-        "request_id": rid,
+        "schema_version": "1.1",
+        "input_id": input_id,
+        "request_id": input_id,
         "stage": "completion",
         "mode": "codex_handoff",
         "required_model": required_model,
         "model_routing": resolved_model_routing(config),
         "chunks": len(chunks),
-        "valid_targets": sorted(collect_valid_targets(lecture)),
-        "required_outputs": [
-            *[f"chunk_{i:04d}.json" for i in range(len(chunks))],
-            "completion.json",
-        ],
+        "valid_targets": sorted(valid_targets),
+        "requests": {
+            output: {
+                "request_id": str(req["request_id"]),
+                "request_file": "merge.request.json" if output == "completion.json" else output.replace(".json", ".request.json"),
+            }
+            for output, req in requests.items()
+        },
+        "required_outputs": list(requests.keys()),
+        "reused_outputs": sorted(reused),
     }
     write_task_file(tasks / "manifest.json", manifest)
+    record_handoff_prepare(workspace_root, "completion", input_id=input_id, requests=requests, reused_outputs=reused, warning_thresholds=config.get("performance", {}).get("packet_warning_chars", {}))
+
     write_instructions(tasks / "INSTRUCTIONS.md", f"""# Codex Handoff — Pedagogical Completion
 
-本阶段要求模型：`{required_model}`。如果当前 Codex 会话不是该模型，请先切换到该模型再处理。
-
-处理所有 `chunk_XXXX.request.json`，把响应写到 `responses/completion/`，然后按 `merge.request.json` 合并为 `completion.json`。
+本阶段要求模型：`{required_model}`。只处理尚未有合法 response 的 request；已有 request_id 完全一致的 response 直接复用。
 
 硬规则：
-- 每个响应 JSON 必须原样回显对应 request 中的 `request_id`。
-- 只能做当前课程所需的教学补充，但“老师没有讲完”不是停止推导的理由。
+- 每个响应 JSON 必须原样回显**该 request 自己的** `request_id`。
 - 对 `requires_solution=true` 且 `solution_completeness=incomplete/missing/uncertain` 的题，只要题目条件足够，必须生成 `type=derived_solution` 的完整补充证明/解答。
 - derived_solution 要连续推导并说明非显然步骤，不得只给结论或“类似可得”。
 - reason 仅允许 `missing_content`、`incomplete_explanation`、`unclear_explanation`、`pedagogical_bridge`。
-- 每项必须有真实 `target_id`、`type`、`why_needed`、`content`。
-- 数学符号用标准 LaTeX，不用 Unicode 数学特殊符号。
 - 不得修改老师原题、原解、原答案；新增证明始终是讲义 supplement。
-- 只有确实无需补充时才返回空 `items`。
+- 数学符号使用标准 LaTeX。
 
-本任务共有 {len(chunks)} 个 chunk。完成后执行 `video-to-notes complete apply VIDEO`。
+本任务共有 {len(chunks)} 个 chunk；prepare 已复用 {len(reused)} 个合法 response。
 """)
     return manifest
 
@@ -150,23 +204,15 @@ def apply_completion(*, workspace_root: Path, config: dict[str, Any]) -> dict[st
     responses = response_root(workspace_root, "completion")
 
     for index in range(chunks):
-        raw = load_response(responses / f"chunk_{index:04d}.json", f"completion chunk {index}")
-        require_request_id(raw, str(manifest.get("request_id", "")), f"completion chunk {index}")
-        validate_completion_items(
-            raw.get("items"),
-            valid_targets=valid_targets,
-            reject_unreferenced_targets=bool(cfg.get("reject_unreferenced_targets", True)),
-        )
+        name = f"chunk_{index:04d}.json"
+        raw = load_response(responses / name, f"completion chunk {index}")
+        require_request_id(raw, manifest_request_id(manifest, name), f"completion chunk {index}")
+        validate_completion_items(raw.get("items"), valid_targets=valid_targets, reject_unreferenced_targets=bool(cfg.get("reject_unreferenced_targets", True)))
 
     merged = load_response(responses / "completion.json", "completion merge")
-    require_request_id(merged, str(manifest.get("request_id", "")), "completion merge")
-    supplements = validate_completion_items(
-        merged.get("items"),
-        valid_targets=valid_targets,
-        reject_unreferenced_targets=bool(cfg.get("reject_unreferenced_targets", True)),
-    )
+    require_request_id(merged, manifest_request_id(manifest, "completion.json"), "completion merge")
+    supplements = validate_completion_items(merged.get("items"), valid_targets=valid_targets, reject_unreferenced_targets=bool(cfg.get("reject_unreferenced_targets", True)))
     lecture["supplements"] = supplements
-    # Completion invalidates all downstream semantic/render/audit conclusions.
     lecture["review"] = {"issues": []}
     lecture.pop("audit", None)
     lecture["stage"] = "completion_draft"
@@ -188,4 +234,5 @@ def apply_completion(*, workspace_root: Path, config: dict[str, Any]) -> dict[st
         "output": str(lecture_path),
     }
     atomic_write_json(workspace_root / "reports" / "completion_report.json", report)
+    record_handoff_apply(workspace_root, "completion", responses)
     return report
