@@ -25,9 +25,9 @@ STAGE_VERSIONS: dict[str, str] = {
     "evidence": "2",
     "reconstruction": "4",
     "completion": "4",
-    "review": "4",
-    "render": "3",
-    "audit": "3",
+    "review": "5",
+    "render": "4",
+    "audit": "4",
 }
 
 STAGE_OUTPUTS: dict[str, tuple[str, ...]] = {

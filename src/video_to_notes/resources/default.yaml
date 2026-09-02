@@ -16,7 +16,8 @@ codex:
     completion: "terra"
     review:
       factual: "luna-high"
-      math: "sol"
+      math: "sol-medium"
+      math_high: "sol-high"
       pedagogical: "terra"
 
 llm:
@@ -153,7 +154,12 @@ review:
 
   math:
     enabled: true
-    review_all_problems: true
+    primary_model: "sol-medium"
+    escalation_model: "sol-high"
+    max_images_per_problem: 2
+    api_model_aliases:
+      sol-medium: ""
+      sol-high: ""
     llm:
       provider: "openai_compatible"
       base_url: "https://api.openai.com/v1"
@@ -184,12 +190,6 @@ render:
   fail_on_missing_image: true
   fail_on_missing_character: true
 
-audit:
-  fail_on_warning: false
-  require_rendered_stage: true
-  require_xelatex_runs: 2
-  block_open_possible_teacher_error: true
-  block_open_review_error: true
 
 stages:
   visual:

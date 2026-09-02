@@ -36,16 +36,16 @@ def test_review_cli_pipeline(tmp_path):
     math_response = tmp_path / "math.json"
     math_response.write_text(
         json.dumps({
-            "issues": [
-                {
-                    "target_id": "P01.teacher_answer",
-                    "severity": "warning",
-                    "label": "possible_teacher_error",
-                    "message": "按题目条件复核，老师答案疑似有误。",
-                    "source_value": "48°",
-                    "review_value": "46°"
-                }
-            ]
+            "reviewed_solutions": [{
+                "target_id": "P01.teacher_solution",
+                "status": "revised",
+                "content": "由正确的角度关系推导，得到 $46^\\circ$。",
+            }],
+            "reviewed_answers": [{
+                "target_id": "P01.teacher_answer",
+                "status": "revised",
+                "content": "$46^\\circ$",
+            }],
         }, ensure_ascii=False),
         encoding="utf-8",
     )
@@ -234,17 +234,94 @@ review:
 
     assert reviewed["stage"] == "review_draft"
     assert reviewed["sections"] == original_body["sections"]
-    assert reviewed["problems"] == original_body["problems"]
+    assert reviewed["problems"][0]["teacher_solution"]["content"] == "由角度关系推导。"
+    assert reviewed["problems"][0]["teacher_answer"]["content"] == "48°"
+    assert reviewed["problems"][0]["publication_solution"]["review_status"] == "revised"
+    assert "$46^\\circ$" in reviewed["problems"][0]["publication_solution"]["content"]
+    assert reviewed["problems"][0]["publication_answer"]["content"] == "$46^\\circ$"
     assert reviewed["supplements"] == original_body["supplements"]
 
     issues = reviewed["review"]["issues"]
-    assert len(issues) == 2
-
-    math_issue = next(x for x in issues if x["review_type"] == "math")
-    assert math_issue["label"] == "possible_teacher_error"
-    assert math_issue["source_value"] == "48°"
-    assert math_issue["review_value"] == "46°"
-    assert reviewed["problems"][0]["teacher_answer"]["content"] == "48°"
+    assert len(issues) == 1
+    assert issues[0]["review_type"] == "pedagogical"
 
     assert (ws / "review" / "issues.json").exists()
     assert (ws / "reports" / "review_report.json").exists()
+
+
+def test_review_api_escalates_medium_unresolved_to_high(tmp_path):
+    project_root = Path(__file__).resolve().parents[2]
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(project_root / "src")
+    video = tmp_path / "lesson.mp4"
+    video.write_bytes(b"fake")
+    workspace_root = tmp_path / "workspace"
+
+    factual_response = tmp_path / "factual.json"
+    factual_response.write_text(json.dumps({"issues": []}), encoding="utf-8")
+    medium_response = tmp_path / "medium.json"
+    medium_response.write_text(json.dumps({
+        "reviewed_solutions": [{"target_id": "P01.teacher_solution", "status": "unresolved"}],
+        "reviewed_answers": [{"target_id": "P01.teacher_answer", "status": "verified"}],
+    }, ensure_ascii=False), encoding="utf-8")
+    high_response = tmp_path / "high.json"
+    high_response.write_text(json.dumps({
+        "reviewed_solutions": [{
+            "target_id": "P01.teacher_solution", "status": "revised", "content": "Sol High 修正后的完整解法"
+        }],
+        "reviewed_answers": [],
+    }, ensure_ascii=False), encoding="utf-8")
+    pedagogical_response = tmp_path / "pedagogical.json"
+    pedagogical_response.write_text(json.dumps({"issues": []}), encoding="utf-8")
+
+    config = tmp_path / "config.yaml"
+    config.write_text(f'''project:
+  workspace_root: "{workspace_root.as_posix()}"
+  project_root: "{project_root.as_posix()}"
+review:
+  factual:
+    llm:
+      provider: file
+      response_files: ["{factual_response.as_posix()}"]
+  math:
+    llm:
+      provider: file
+      response_files: ["{medium_response.as_posix()}"]
+    high_llm:
+      provider: file
+      response_files: ["{high_response.as_posix()}"]
+  pedagogical:
+    llm:
+      provider: file
+      response_files: ["{pedagogical_response.as_posix()}"]
+''', encoding="utf-8")
+
+    assert _run(["--config", str(config), "init", str(video)], project_root, env).returncode == 0
+    ws = workspace_root / "lesson"
+    (ws / "lecture").mkdir(parents=True, exist_ok=True)
+    (ws / "evidence").mkdir(parents=True, exist_ok=True)
+    lecture = {
+        "schema_version": "1.0", "stage": "completion_draft", "metadata": {}, "overview": {}, "sections": [],
+        "problems": [{
+            "id": "P01", "statement": {"content": "求证 A=B", "evidence_ids": ["ev_1"], "status": "confirmed"},
+            "teacher_solution": {"content": "原解", "evidence_ids": ["ev_2"], "status": "confirmed"},
+            "teacher_answer": {"content": "A=B", "evidence_ids": ["ev_3"], "status": "confirmed"},
+        }],
+        "supplements": [], "figures": [], "summary": [], "review": {"issues": []},
+    }
+    timeline = {"timeline": [
+        {"id": "ev_1", "start": 0, "end": 1, "frame_ids": [], "frames": [], "transcript_text": "题目", "status": "confirmed"},
+        {"id": "ev_2", "start": 1, "end": 2, "frame_ids": [], "frames": [], "transcript_text": "原解", "status": "confirmed"},
+        {"id": "ev_3", "start": 2, "end": 3, "frame_ids": [], "frames": [], "transcript_text": "答案", "status": "confirmed"},
+    ]}
+    (ws / "lecture/lecture.json").write_text(json.dumps(lecture, ensure_ascii=False), encoding="utf-8")
+    (ws / "evidence/timeline.json").write_text(json.dumps(timeline, ensure_ascii=False), encoding="utf-8")
+
+    result = _run(["--config", str(config), "review", "api", str(video)], project_root, env)
+    assert result.returncode == 0, result.stderr
+    reviewed = json.loads((ws / "lecture/lecture.json").read_text(encoding="utf-8"))
+    assert reviewed["problems"][0]["publication_solution"]["content"] == "Sol High 修正后的完整解法"
+    assert reviewed["problems"][0]["publication_solution"]["review_model"] == "sol-high"
+    report = json.loads((ws / "reports/review_report.json").read_text(encoding="utf-8"))
+    assert report["reviewers"]["math"]["high_escalations"] == 1
+    assert report["math_review"]["unresolved"] == 0

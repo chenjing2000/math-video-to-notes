@@ -155,38 +155,58 @@ def test_codex_handoff_completion_and_review_apply(tmp_path):
     applied = _run(project_root, env, "--config", str(config), "complete", "apply", str(video))
     assert applied.returncode == 0, applied.stderr
 
+    # Review is phased: factual -> per-problem Sol Medium -> optional Sol High -> pedagogical.
     prep = _run(project_root, env, "--config", str(config), "review", "prepare", str(video))
     assert prep.returncode == 0, prep.stderr
-    manifest = json.loads((ws / "tasks" / "review" / "manifest.json").read_text(encoding="utf-8"))
     review_tasks = ws / "tasks" / "review"
-    if (review_tasks / "factual.request.json").exists():
-        factual_task = json.loads((review_tasks / "factual.request.json").read_text(encoding="utf-8"))
-        assert factual_task["required_model"] == "luna-high"
-    if (review_tasks / "math.request.json").exists():
-        math_task = json.loads((review_tasks / "math.request.json").read_text(encoding="utf-8"))
-        assert math_task["required_model"] == "sol"
-    if (review_tasks / "pedagogical.request.json").exists():
-        pedagogical_task = json.loads((review_tasks / "pedagogical.request.json").read_text(encoding="utf-8"))
-        assert pedagogical_task["required_model"] == "terra"
     rresp = ws / "responses" / "review"
     rresp.mkdir(parents=True, exist_ok=True)
-    for name in manifest["required_outputs"]:
-        request = json.loads((review_tasks / name.replace(".json", ".request.json")).read_text(encoding="utf-8"))
-        if name == "math.json":
-            payload = {"request_id": request["request_id"], "verified_supplements": [], "issues": [{
-                "target_id": "P01.teacher_answer", "severity": "warning",
-                "label": "possible_teacher_error", "message": "答案疑似有误。",
-                "source_value": "48°", "review_value": "46°",
-            }]}
-        else:
-            payload = {"request_id": request["request_id"], "issues": []}
-        (rresp / name).write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    manifest = json.loads((review_tasks / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["phase"] == "factual"
+    factual_task = json.loads((review_tasks / "factual.request.json").read_text(encoding="utf-8"))
+    assert factual_task["required_model"] == "luna-high"
+    (rresp / "factual.json").write_text(json.dumps({"request_id": factual_task["request_id"], "issues": []}, ensure_ascii=False), encoding="utf-8")
+
+    prep = _run(project_root, env, "--config", str(config), "review", "prepare", str(video))
+    assert prep.returncode == 0, prep.stderr
+    manifest = json.loads((review_tasks / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["phase"] == "math_medium"
+    math_name = "math_P01_medium.json"
+    math_task = json.loads((review_tasks / "math_P01_medium.request.json").read_text(encoding="utf-8"))
+    assert math_task["required_model"] == "sol-medium"
+    (rresp / math_name).write_text(json.dumps({
+        "request_id": math_task["request_id"],
+        "reviewed_solutions": [{
+            "target_id": "P01.teacher_solution", "status": "revised",
+            "content": "由正确的角度关系推导，得到 $46^\\circ$。",
+        }],
+        "reviewed_answers": [{
+            "target_id": "P01.teacher_answer", "status": "revised", "content": "$46^\\circ$",
+        }],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    prep = _run(project_root, env, "--config", str(config), "review", "prepare", str(video))
+    assert prep.returncode == 0, prep.stderr
+    manifest = json.loads((review_tasks / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["phase"] == "pedagogical"
+    pedagogical_task = json.loads((review_tasks / "pedagogical.request.json").read_text(encoding="utf-8"))
+    assert pedagogical_task["required_model"] == "terra"
+    (rresp / "pedagogical.json").write_text(json.dumps({"request_id": pedagogical_task["request_id"], "issues": []}, ensure_ascii=False), encoding="utf-8")
+
+    prep = _run(project_root, env, "--config", str(config), "review", "prepare", str(video))
+    assert prep.returncode == 0, prep.stderr
+    manifest = json.loads((review_tasks / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["phase"] == "ready"
+
     applied = _run(project_root, env, "--config", str(config), "review", "apply", str(video))
     assert applied.returncode == 0, applied.stderr
     reviewed = json.loads((ws / "lecture" / "lecture.json").read_text(encoding="utf-8"))
     assert reviewed["stage"] == "review_draft"
     assert reviewed["problems"][0]["teacher_answer"]["content"] == "48°"
-    assert reviewed["review"]["issues"][0]["review_value"] == "46°"
+    assert reviewed["problems"][0]["publication_answer"]["content"] == "$46^\\circ$"
+    assert reviewed["problems"][0]["publication_solution"]["review_status"] == "revised"
+    assert reviewed["review"]["issues"] == []
 
 
 def test_codex_tasks_status(tmp_path):

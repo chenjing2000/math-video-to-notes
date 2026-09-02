@@ -61,7 +61,14 @@ def run_audit_stage(ctx: StageContext) -> None:
         all_ok = all_ok and ok
         checks.append({"name": stage, "passed": ok, "quality": quality})
 
-    verdict = "PASS" if all_ok else "REVIEW_REQUIRED"
+    has_notes = any(
+        isinstance(item.get("quality"), dict) and bool(item["quality"].get("has_notes"))
+        for item in checks
+    )
+    if all_ok:
+        verdict = "PASS_WITH_NOTES" if has_notes else "PASS"
+    else:
+        verdict = "REVIEW_REQUIRED"
     report = {
         "schema_version": "1.2",
         "stage": "audit",
@@ -69,6 +76,7 @@ def run_audit_stage(ctx: StageContext) -> None:
         "summary": {
             "passed": sum(1 for x in checks if x["passed"]),
             "failed": sum(1 for x in checks if not x["passed"]),
+            "has_notes": has_notes,
         },
         "checks": checks,
     }

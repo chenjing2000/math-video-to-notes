@@ -1,8 +1,8 @@
 from video_to_notes.review.routing import (
     collect_all_target_ids,
     collect_factual_targets,
-    collect_math_targets,
 )
+from video_to_notes.review.math_core import collect_math_review_targets
 
 
 def _lecture():
@@ -86,24 +86,16 @@ def test_factual_router_reviews_important_problem_fields_and_uncertain_blocks():
     assert "P01.teacher_answer" in ids
 
 
-def test_math_router_reviews_problems():
-    targets = collect_math_targets(
-        _lecture(),
-        review_all_problems=True,
-    )
-    ids = {x["target_id"] for x in targets}
-    assert "P01" in ids
-    assert "blk_001" in ids
-
-
-def test_math_router_includes_problem_supplements():
+def test_math_review_collects_every_solution_process():
     lecture = _lecture()
     lecture["supplements"][0].update({
         "type": "derived_solution",
         "content": "补充证明",
     })
-    targets = collect_math_targets(lecture, review_all_problems=True)
-    problem_target = next(x for x in targets if x["target_id"] == "P01")
-    supplements = problem_target["content"]["supplements"]
-    assert supplements[0]["id"] == "sup_001"
-    assert supplements[0]["type"] == "derived_solution"
+    targets = collect_math_review_targets(lecture)
+    assert len(targets) == 1
+    target = targets[0]
+    assert target["target_id"] == "P01"
+    ids = {item["target_id"] for item in target["solutions"]}
+    assert ids == {"P01.teacher_solution", "sup_001"}
+    assert target["answer"]["target_id"] == "P01.teacher_answer"

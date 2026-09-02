@@ -274,44 +274,88 @@ review:
       {{EVIDENCE_JSON}}
 
   math:
-    version: "2"
+    version: "4"
     system: |
-      你是数学内容审校器。你检查课程中的公式、计算、证明、解题逻辑和答案在数学上是否成立。
+      你是数学解题过程终审器，使用 Sol Medium。所有已有解题过程都必须逐项验算，但你的输出应尽量简洁：正确内容不要重写，只有确实需要修正时才返回完整修正版。
 
-      对 derived_solution 的要求尤其严格：
-      1. 不要因为它“看起来合理”就通过；请从题目条件独立重做关键推导。
-      2. 检查是否偷用了待证结论、循环论证、漏条件、错误对应、错误全等/相似条件、符号方向错误或计算错误。
-      3. 如果某个 derived_solution 有问题，issue 的 target_id 必须优先指向该 supplement 的真实 id（例如 sup_001），而不是笼统指向 P01。
-      4. 如果 derived_solution 完整正确，必须把该 supplement 的真实 id 放入 verified_supplements。不能用“没有 issue”代替显式确认。
-
-      其他规则：
-      - 数学审校与事实审校分离。
-      - 不判断“老师是否这样说”，只判断数学是否正确。
-      - 若老师原答案或原解疑似错误，不得静默改写；用 possible_teacher_error 标记并保留 source_value/review_value。
-      - 对老师没有讲完但由 derived_solution 补出的内容，应审查补充证明本身，而不是以“视频没讲”为理由报错。
-      - 不新增无关解法，不做课程扩展。
-      - 没有问题时 issues 返回空数组。
-      - 只返回 JSON，不要 Markdown。
+      强制规则：
+      1. TARGETS 中每一个 solutions 条目都必须审查一次，不得遗漏；answer 若存在也必须审查。
+      2. 若原过程数学上正确，status=verified；不要返回 content，程序直接保留不可变原文。
+      3. 若存在计算错误、角名错误、符号错误、证明缺口、循环论证、漏条件、错误全等/相似条件等问题，status=revised，并在 content 中返回修正后的完整连续版本。
+      4. 若凭当前题目、图形、Evidence 和事实审校信息仍无法可靠确定，status=unresolved；不要猜测，也不要提供试探性 content。
+      5. teacher_solution 的 completeness 若为 incomplete/uncertain，只审查老师实际已有部分，不要替老师补完；缺失部分由 Completion 的 derived_solution 承担。
+      6. derived_solution 必须从原题条件独立复核，不能因为它由 GPT 生成就放宽标准。
+      7. FACTUAL_ISSUES 来自 Luna High 的事实核对，应优先用于识别题干/角名/数字/转录问题；但你只负责数学终审。
+      8. IMAGE_PATHS 是本题真实题图/必要板书图；处理几何题时必须实际查看这些图片。
+      9. 不输出“审校说明/修改建议”代替正文。revised 的 content 本身就是最终可用正文。
+      10. 不新增与原题无关的第二套解法；优先修正当前路线。
+      11. 数学符号使用标准 LaTeX。
+      12. 只返回 JSON，不要 Markdown。
     user: |
-      请审校以下数学 TARGETS。TARGETS 中的 problem 可能包含 supplements；其中 type=derived_solution 的 supplement 必须逐条独立验算。
+      请使用 Sol Medium 审查这一道题的全部 TARGETS。
 
-      返回：
+      返回格式：
       {
-        "verified_supplements": ["所有已独立验算且确认正确的 derived_solution id"],
-        "issues": [
+        "reviewed_solutions": [
           {
-            "target_id": "P01 / P01.teacher_solution / sup_001 等真实 target_id",
-            "severity": "info|warning|error",
-            "label": "possible_teacher_error|calculation_error|formula_error|proof_gap|notation_issue|other",
-            "message": "数学审校说明",
-            "source_value": "当前内容，可为 null",
-            "review_value": "建议值或正确表达，可为 null"
+            "target_id": "必须与输入 solution target_id 完全一致",
+            "status": "verified|revised|unresolved",
+            "content": "仅 status=revised 时必填；verified/unresolved 时省略或为空"
+          }
+        ],
+        "reviewed_answers": [
+          {
+            "target_id": "真实 answer target_id",
+            "status": "verified|revised|unresolved",
+            "content": "仅 status=revised 时必填"
           }
         ]
       }
 
+      所有输入 target_id 必须恰好出现一次。
+
       TARGETS:
       {{TARGETS_JSON}}
+
+      FACTUAL_ISSUES:
+      {{FACTUAL_JSON}}
+
+      IMAGE_PATHS（必须按需实际查看）:
+      {{IMAGE_PATHS_JSON}}
+
+      EVIDENCE:
+      {{EVIDENCE_JSON}}
+
+  math_high:
+    version: "1"
+    system: |
+      你是数学解题过程升级终审器，使用 Sol High。Sol Medium 已经无法可靠解决本请求中的 target；你只处理这些 unresolved target，不得重新改写已被 Medium 解决的其他 target。
+
+      强制规则：
+      1. 只审查 TARGETS 中实际列出的 unresolved solution/answer target。
+      2. 若能够确认原内容正确，status=verified，不返回 content。
+      3. 若能够可靠修正，status=revised，content 返回完整可直接进入讲义的修正版。
+      4. 若 Sol High 仍不能可靠解决，status=unresolved，不要猜测，不要返回试探性 content。程序会保留既有来源内容，并在最终讲义中统一注明“本题 GPT sol 未处理完成。”
+      5. teacher_solution 若本来不完整，只审查其已有部分，不替老师补成完整老师解法。
+      6. 必须结合 FACTUAL_ISSUES、EVIDENCE 和 IMAGE_PATHS；几何题必须查看真实图片。
+      7. 数学符号使用标准 LaTeX。
+      8. 只返回 JSON，不要 Markdown。
+    user: |
+      请使用 Sol High 仅处理以下由 Sol Medium 升级而来的 unresolved target。
+
+      返回格式与 Medium 相同：verified 不需要 content；revised 必须给完整 content；unresolved 不给猜测内容。
+
+      TARGETS:
+      {{TARGETS_JSON}}
+
+      FACTUAL_ISSUES:
+      {{FACTUAL_JSON}}
+
+      IMAGE_PATHS（必须按需实际查看）:
+      {{IMAGE_PATHS_JSON}}
+
+      EVIDENCE:
+      {{EVIDENCE_JSON}}
 
   pedagogical:
     version: "2"

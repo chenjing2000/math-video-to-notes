@@ -42,8 +42,8 @@ def _load(workspace_root: Path) -> dict[str, Any]:
 
 
 def _save(workspace_root: Path, data: dict[str, Any]) -> None:
+    """Persist raw metrics only; reports are generated on demand or at workflow boundaries."""
     atomic_write_json(_metrics_path(workspace_root), data)
-    write_performance_report(workspace_root)
 
 
 def reset_performance(workspace_root: Path) -> None:
@@ -107,6 +107,7 @@ def record_handoff_prepare(
             "completion_merge": "completion",
             "review_factual": "factual_review",
             "review_math": "math_review",
+            "review_math_high": "math_review",
             "review_pedagogical": "pedagogical_review",
         }.get(task_type, stage)
         threshold = int(warning_thresholds.get(threshold_key, 0) or 0)
@@ -176,6 +177,8 @@ def build_performance_report(workspace_root: Path) -> dict[str, Any]:
     by_stage: dict[str, Any] = {}
     largest: list[dict[str, Any]] = []
     packet_warnings: list[dict[str, Any]] = []
+    math_medium_request_ids: set[str] = set()
+    math_high_request_ids: set[str] = set()
 
     for attempt in data.get("handoff_attempts", []):
         if not isinstance(attempt, dict):
@@ -203,6 +206,12 @@ def build_performance_report(workspace_root: Path) -> dict[str, Any]:
             imgs = int(info.get("images_sent", 0) or 0)
             out_chars = int(info.get("output_characters", 0) or 0)
             reused = bool(info.get("reused"))
+            task_type = str(info.get("task_type", ""))
+            rid = str(info.get("request_id", ""))
+            if task_type == "review_math" and rid:
+                math_medium_request_ids.add(rid)
+            elif task_type == "review_math_high" and rid:
+                math_high_request_ids.add(rid)
             if reused:
                 requests_reused += 1
                 stage_item["reused_requests"] += 1
@@ -252,6 +261,9 @@ def build_performance_report(workspace_root: Path) -> dict[str, Any]:
             "avoided_images": avoided_images,
             "largest_requests": largest[:10],
             "packet_warnings": packet_warnings,
+            "math_medium_requests": len(math_medium_request_ids),
+            "math_high_requests": len(math_high_request_ids),
+            "math_high_escalation_rate": round(len(math_high_request_ids) / len(math_medium_request_ids), 4) if math_medium_request_ids else 0.0,
         },
     }
     return report
@@ -286,6 +298,9 @@ def render_performance_markdown(report: dict[str, Any]) -> str:
         f"- Requests generated: {llm.get('requests_generated', 0)}",
         f"- Requests executed: {llm.get('requests_executed', 0)}",
         f"- Requests reused: {llm.get('requests_reused', 0)}",
+        f"- Sol Medium math requests: {llm.get('math_medium_requests', 0)}",
+        f"- Sol High escalations: {llm.get('math_high_requests', 0)}",
+        f"- Sol High escalation rate: {float(llm.get('math_high_escalation_rate', 0.0)):.1%}",
         f"- Input characters executed: {llm.get('input_characters', 0)}",
         f"- Output characters observed: {llm.get('output_characters', 0)}",
         f"- Images referenced by executed requests: {llm.get('images_sent', 0)}",

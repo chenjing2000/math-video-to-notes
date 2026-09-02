@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections import defaultdict
 from typing import Any
 
 
@@ -112,48 +111,5 @@ def collect_factual_targets(
                     status=value.get("status"),
                     evidence_ids=list(value.get("evidence_ids", [])),
                 ))
-
-    return targets
-
-
-def collect_math_targets(
-    lecture: dict[str, Any],
-    *,
-    review_all_problems: bool,
-) -> list[dict[str, Any]]:
-    targets: list[dict[str, Any]] = []
-    supplements_by_target: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for supplement in lecture.get("supplements", []):
-        if not isinstance(supplement, dict):
-            continue
-        target_id = str(supplement.get("target_id", "")).strip()
-        if target_id:
-            supplements_by_target[target_id].append(supplement)
-
-    if review_all_problems:
-        for problem in lecture.get("problems", []):
-            pid = str(problem.get("id", "")).strip()
-            if pid:
-                targets.append({
-                    "target_id": pid,
-                    "kind": "problem",
-                    "content": {
-                        "problem": problem,
-                        "supplements": supplements_by_target.get(pid, []),
-                    },
-                })
-
-    for section in lecture.get("sections", []):
-        for block in section.get("blocks", []):
-            block_type = str(block.get("type", ""))
-            if block_type in {"theorem", "property", "method", "knowledge"}:
-                bid = str(block.get("id", "")).strip()
-                content = str(block.get("content", ""))
-                if bid and any(ch in content for ch in "=<>±√∠°^_\\"):
-                    targets.append({
-                        "target_id": bid,
-                        "kind": "math_block",
-                        "content": block,
-                    })
 
     return targets

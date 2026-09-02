@@ -171,7 +171,7 @@
 - 【讲义补充】
 - 【补充说明】
 - 【推导补充】
-- 【审校提示】
+- Review issues are kept in reports and are not rendered into the final lecture by default.
 
 ---
 

@@ -26,4 +26,3 @@ def test_build_render_context():
     assert ctx["unassigned_problems"][0]["id"] == "P02"
     assert ctx["supplements_by_target"]["P01"][0]["id"] == "sup_001"
     assert ctx["figures_by_problem"]["P01"][0]["id"] == "fig_001"
-    assert ctx["issues_by_target"]["P01"][0]["id"] == "rv_001"

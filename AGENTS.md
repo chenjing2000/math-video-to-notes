@@ -54,7 +54,7 @@ evidence        -> Python
 reconstruction  -> Codex / Terra
 completion      -> Codex / Terra
 review factual  -> Codex / Luna High
-review math     -> Codex / Sol
+review math     -> Codex / Sol Medium; unresolved target -> Sol High
 review pedagogy -> Codex / Terra
 render          -> Python / Jinja2 / XeLaTeX
 audit           -> Python
@@ -99,7 +99,8 @@ Every handoff request contains `required_model`.
 reconstruction       -> terra
 completion           -> terra
 review factual       -> luna-high
-review math          -> sol
+review math          -> sol-medium
+review math escalation -> sol-high
 review pedagogical   -> terra
 ```
 
@@ -120,6 +121,22 @@ Prefer blocking waits for ffmpeg, Whisper, XeLaTeX, and other fixed-duration sub
 7. Mathematical/special symbols in generated note content use standard LaTeX rather than Unicode math glyphs.
 8. Important statements, problems, source answers, and teacher solution steps remain traceable to Evidence IDs.
 9. If evidence is insufficient, preserve uncertainty. Do not fabricate source content.
+
+
+## Math review publication rule (v1.2.3)
+
+Math review is sequential and mandatory for every problem that contains any solution process:
+
+1. Luna High factual review runs first. Its factual issues are passed into the math packet.
+2. Each problem gets one `sol-medium` request. Every solution/answer target in that problem must be reviewed.
+3. `verified`: keep immutable source text; do not rewrite it.
+4. `revised`: return the complete corrected publishable text.
+5. `unresolved`: do not guess and do not return speculative publishable content.
+6. Only Medium-unresolved targets are escalated to `sol-high`; already resolved targets are not re-reviewed.
+7. If Sol High is still unresolved, the PDF MUST still be generated. Keep the best existing source/publication content and show exactly once for that problem: `本题 GPT sol 未处理完成。`
+8. Geometry math requests include real `image_paths`; inspect them.
+9. Review always starts from immutable teacher/supplement source fields, never from a previous reviewed/publication result.
+10. The final PDF shows one publication solution, not reviewer comments or duplicate teacher/supplement/review copies.
 
 ## Reconstruction — visual binding is required
 
@@ -164,17 +181,17 @@ Completion must never modify the original `statement`, `teacher_solution`, or `t
 
 Only verify source fidelity against Evidence. A mathematically wrong statement can still be factually faithful to the video.
 
-### math / Sol
+### math / Sol Medium
 
-Independently verify mathematical correctness. For every `type=derived_solution` supplement:
+Sol Medium is the final mathematical editor for **every existing solution process**. If a problem contains a `teacher_solution`, legacy `supplement_solution`, or `type=derived_solution`, each process must be independently checked once.
 
-- solve/check from the original problem conditions;
-- inspect every key proof step;
-- detect circular reasoning, use of the desired conclusion as an assumption, missing conditions, invalid congruence/similarity, bad calculations, etc.;
-- if a derived solution is wrong, target the issue to its supplement id (`sup_XXX`) whenever possible;
-- the math response must explicitly list every checked supplement id in `verified_supplements`; absence of an issue is not enough. `review apply` only marks explicitly verified supplements as `math_review_status=verified`.
-
-Teacher mistakes remain source text and are reported as `possible_teacher_error`; never silently rewrite them as teacher content.
+- Correct solutions return `status=verified` with final publishable content.
+- Incorrect or incomplete reasoning is directly repaired and returned as `status=revised`; do not substitute a review note for the corrected solution.
+- Answers attached to reviewed problems are checked in the same pass and may also be directly revised.
+- If the conditions are insufficient to determine a safe correction, return `status=unresolved`; do not guess.
+- Preserve the existing mathematical route when practical instead of inventing unrelated alternate solutions.
+- Original teacher content remains in internal source fields/snapshots for provenance; the published lecture uses the Sol-reviewed version, so corrected text must not be presented as a verbatim teacher quote.
+- Every solution target in the request must be returned exactly once.
 
 ### pedagogical / Terra
 

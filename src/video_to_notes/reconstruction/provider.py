@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import json
+import mimetypes
 import os
 import subprocess
 import urllib.error
@@ -13,7 +15,7 @@ from ..errors import StageError
 
 
 class LLMProvider(Protocol):
-    def generate_json(self, *, system: str, user: str) -> dict[str, Any]: ...
+    def generate_json(self, *, system: str, user: str, image_paths: list[Path] | None = None) -> dict[str, Any]: ...
 
 
 def _extract_json_text(text: str) -> str:
@@ -48,7 +50,7 @@ class OpenAICompatibleProvider:
     timeout_seconds: int = 180
     temperature: float = 0.0
 
-    def generate_json(self, *, system: str, user: str) -> dict[str, Any]:
+    def generate_json(self, *, system: str, user: str, image_paths: list[Path] | None = None) -> dict[str, Any]:
         api_key = os.environ.get(self.api_key_env, "")
         if not api_key:
             raise StageError(
@@ -56,12 +58,27 @@ class OpenAICompatibleProvider:
             )
 
         endpoint = self.base_url.rstrip("/") + "/chat/completions"
+        user_content: Any = user
+        if image_paths:
+            parts: list[dict[str, Any]] = [{"type": "text", "text": user}]
+            for path in image_paths:
+                path = Path(path)
+                if not path.exists() or not path.is_file():
+                    raise StageError(f"LLM image 不存在: {path}")
+                mime = mimetypes.guess_type(path.name)[0] or "image/jpeg"
+                encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+                parts.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{mime};base64,{encoded}"},
+                })
+            user_content = parts
+
         payload = {
             "model": self.model,
             "temperature": self.temperature,
             "messages": [
                 {"role": "system", "content": system},
-                {"role": "user", "content": user},
+                {"role": "user", "content": user_content},
             ],
             "response_format": {"type": "json_object"},
         }
@@ -92,9 +109,9 @@ class CommandProvider:
     command: list[str]
     timeout_seconds: int = 300
 
-    def generate_json(self, *, system: str, user: str) -> dict[str, Any]:
+    def generate_json(self, *, system: str, user: str, image_paths: list[Path] | None = None) -> dict[str, Any]:
         payload = json.dumps(
-            {"system": system, "user": user},
+            {"system": system, "user": user, "image_paths": [str(x) for x in (image_paths or [])]},
             ensure_ascii=False,
         )
         try:
@@ -121,7 +138,7 @@ class FileProvider:
     response_files: list[Path]
     _index: int = 0
 
-    def generate_json(self, *, system: str, user: str) -> dict[str, Any]:
+    def generate_json(self, *, system: str, user: str, image_paths: list[Path] | None = None) -> dict[str, Any]:
         if self._index >= len(self.response_files):
             raise StageError("FileProvider 没有足够的响应文件。")
         path = self.response_files[self._index]

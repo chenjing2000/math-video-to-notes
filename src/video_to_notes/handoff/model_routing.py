@@ -9,12 +9,13 @@ DEFAULT_MODEL_ROUTING: dict[str, Any] = {
     "completion": "terra",
     "review": {
         "factual": "luna-high",
-        "math": "sol",
+        "math": "sol-medium",
+        "math_high": "sol-high",
         "pedagogical": "terra",
     },
 }
 
-_ALLOWED_MODELS = {"luna-high", "terra", "sol"}
+_ALLOWED_MODELS = {"luna-high", "terra", "sol-medium", "sol-high"}
 
 
 def _normalize_model(value: Any) -> str:
@@ -22,6 +23,11 @@ def _normalize_model(value: Any) -> str:
     aliases = {
         "luna high": "luna-high",
         "luna_high": "luna-high",
+        "sol": "sol-medium",
+        "sol medium": "sol-medium",
+        "sol_medium": "sol-medium",
+        "sol high": "sol-high",
+        "sol_high": "sol-high",
     }
     return aliases.get(model, model)
 
@@ -31,7 +37,7 @@ def resolve_required_model(config: dict[str, Any], task_type: str) -> str:
 
     if task_type in {"reconstruction", "completion"}:
         raw = routing.get(task_type, DEFAULT_MODEL_ROUTING[task_type])
-    elif task_type in {"factual", "math", "pedagogical"}:
+    elif task_type in {"factual", "math", "math_high", "pedagogical"}:
         review_cfg = routing.get("review", {})
         default_review = DEFAULT_MODEL_ROUTING["review"]
         raw = review_cfg.get(task_type, default_review[task_type])
@@ -63,6 +69,7 @@ def resolved_model_routing(config: dict[str, Any]) -> dict[str, Any]:
         "review": {
             "factual": resolve_required_model(config, "factual"),
             "math": resolve_required_model(config, "math"),
+            "math_high": resolve_required_model(config, "math_high"),
             "pedagogical": resolve_required_model(config, "pedagogical"),
         },
     }

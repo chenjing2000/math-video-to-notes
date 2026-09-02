@@ -14,7 +14,8 @@ def test_default_model_routing_uses_luna_high_minimum():
         "completion": "terra",
         "review": {
             "factual": "luna-high",
-            "math": "sol",
+            "math": "sol-medium",
+            "math_high": "sol-high",
             "pedagogical": "terra",
         },
     }
@@ -41,3 +42,12 @@ def test_reject_luna_below_high():
     }
     with pytest.raises(Exception, match="最低必须使用 luna-high"):
         resolve_required_model(config, "factual")
+
+
+def test_legacy_sol_alias_is_upgraded_to_medium():
+    config = {"codex": {"model_routing": {"review": {"math": "sol"}}}}
+    assert resolve_required_model(config, "math") == "sol-medium"
+
+
+def test_math_high_route_is_sol_high():
+    assert resolve_required_model({}, "math_high") == "sol-high"

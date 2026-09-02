@@ -69,15 +69,21 @@ class CodexWorkflow:
             return None
         manifest_path = self.ws.root / "tasks" / stage / "manifest.json"
         current_input_id = request_id(self.ws.root, self.config, stage)
-        needs_prepare = not manifest_path.exists()
-        if not needs_prepare:
-            try:
-                existing_manifest = read_json(manifest_path)
-                needs_prepare = not isinstance(existing_manifest, dict) or str(existing_manifest.get("input_id", "")) != current_input_id
-            except Exception:
-                needs_prepare = True
-        if needs_prepare:
+        # Review is a cumulative multi-phase handoff (factual -> Medium -> High -> pedagogical).
+        # Re-preparing it is idempotent and preserves exact valid responses while exposing
+        # only the next required request files.
+        if stage == "review":
             self._prepare_handoff(stage)
+        else:
+            needs_prepare = not manifest_path.exists()
+            if not needs_prepare:
+                try:
+                    existing_manifest = read_json(manifest_path)
+                    needs_prepare = not isinstance(existing_manifest, dict) or str(existing_manifest.get("input_id", "")) != current_input_id
+                except Exception:
+                    needs_prepare = True
+            if needs_prepare:
+                self._prepare_handoff(stage)
         manifest = read_json(manifest_path)
         if not isinstance(manifest, dict):
             raise StageError(f"非法 handoff manifest: {manifest_path}")
@@ -90,7 +96,7 @@ class CodexWorkflow:
                 workspace=str(self.ws.root), stage=stage,
                 task_dir=str(self.ws.root / "tasks" / stage), response_dir=str(response_dir),
                 required_outputs=required, missing_outputs=missing,
-                required_models=self._required_models(stage),
+                required_models=self._required_models(stage, manifest, missing),
                 message="Codex must complete the prepared request JSON files and invoke the same workflow command again.",
             )
         self._apply_handoff(stage)
@@ -119,9 +125,17 @@ class CodexWorkflow:
         write_receipt(self.ws.root, self.config, stage)
         self.logger.info("[workflow] %s handoff applied", stage)
 
-    def _required_models(self, stage: str) -> list[str]:
+    def _required_models(self, stage: str, manifest: dict[str, Any], outputs: list[str]) -> list[str]:
         models: list[str] = []
-        for path in sorted((self.ws.root / "tasks" / stage).glob("*.request.json")):
+        requests = manifest.get("requests", {}) if isinstance(manifest, dict) else {}
+        for output in outputs:
+            entry = requests.get(output, {}) if isinstance(requests, dict) else {}
+            request_file = str(entry.get("request_file", "")) if isinstance(entry, dict) else ""
+            if not request_file:
+                request_file = output.replace(".json", ".request.json")
+            path = self.ws.root / "tasks" / stage / request_file
+            if not path.exists():
+                continue
             data = read_json(path)
             model = str(data.get("required_model", "")) if isinstance(data, dict) else ""
             if model and model not in models:
@@ -140,7 +154,7 @@ class CodexWorkflow:
         if not tex.exists() or not pdf.exists() or pdf.stat().st_size == 0:
             raise StageError("workflow reached terminal stages but LaTeX/PDF output is missing.")
         return WorkflowResult(
-            status="WORKFLOW_COMPLETE" if verdict == "PASS" else "WORKFLOW_COMPLETE_REVIEW_REQUIRED",
+            status="WORKFLOW_COMPLETE" if verdict in {"PASS", "PASS_WITH_NOTES"} else "WORKFLOW_COMPLETE_REVIEW_REQUIRED",
             workspace=str(self.ws.root), latex=str(tex), pdf=str(pdf), audit_report=str(self.ws.reports / "quality_report.md"), audit_verdict=verdict,
             message="LaTeX/PDF generated and audit completed.",
         )

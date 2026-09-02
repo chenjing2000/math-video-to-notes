@@ -33,7 +33,7 @@ workflow VIDEO
   |
   +-- review
   |     +-- prepare automatically if needed
-  |     +-- Luna High / Sol / Terra requests
+  |     +-- Luna High / Sol Medium / Terra requests
   |     +-- apply automatically when responses exist
   |
   +-- render

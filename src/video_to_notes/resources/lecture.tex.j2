@@ -40,7 +40,7 @@
 {\par\smallskip}
 
 \newenvironment{solution}{%
-  \par\noindent{\color{topicblue}\bfseries 【老师解法】}\par\nopagebreak\smallskip}
+  \par\noindent{\color{topicblue}\bfseries 【解法】}\par\nopagebreak\smallskip}
 {\par\smallskip}
 
 \newenvironment{supplement}{%
@@ -52,7 +52,7 @@
 {\par\smallskip}
 
 \newenvironment{warningbox}{%
-  \par\noindent{\color{warnred}\bfseries 【审校提示】}\par\nopagebreak\smallskip}
+  \par\noindent{\color{warnred}\bfseries 【提示】}\par\nopagebreak\smallskip}
 {\par\smallskip}
 
 \newcommand{\answer}[1]{%
@@ -139,11 +139,6 @@
 <% endif %>
 \end{problem}
 
-<% for issue in issues_by_target.get(problem.get("id", "") ~ ".statement", []) %>
-\begin{warningbox}
-{{ issue.get("message", "") | tex }}
-\end{warningbox}
-<% endfor %>
 
 <% for fig in figures_by_problem.get(problem.get("id"), []) %>
 \shot{ {{- fig.get("width", "0.92") -}} }{ {{- fig.get("publication_name", "") | tex -}} }{ {{- fig.get("caption", "视频关键画面") | tex -}} }
@@ -155,44 +150,44 @@
 \end{observation}
 <% endif %>
 
-<% if problem.get("teacher_solution") %>
+<% if problem.get("publication_solution") %>
+\begin{solution}
+{{ problem.get("publication_solution", {}).get("content", "") | tex }}
+\end{solution}
+<% elif problem.get("teacher_solution") %>
 \begin{solution}
 {{ problem.get("teacher_solution", {}).get("content", "") | tex }}
 \end{solution}
-<% for issue in issues_by_target.get(problem.get("id", "") ~ ".teacher_solution", []) %>
-\begin{warningbox}
-{{ issue.get("message", "") | tex }}
-\end{warningbox}
-<% endfor %>
+<% elif problem.get("supplement_solution") %>
+\begin{derivedsolution}
+{{ problem.get("supplement_solution", {}).get("content", "") | tex }}
+\end{derivedsolution}
 <% endif %>
 
 <% for sup in supplements_by_target.get(problem.get("id"), []) %>
-<% if sup.get("type") == "derived_solution" %>
-\begin{derivedsolution}
-{{ sup.get("content", "") | tex }}
-\end{derivedsolution}
-<% else %>
+<% if sup.get("type") != "derived_solution" %>
 \begin{supplement}
 {{ sup.get("content", "") | tex }}
 \end{supplement}
+<% elif not problem.get("publication_solution") %>
+\begin{derivedsolution}
+{{ sup.get("content", "") | tex }}
+\end{derivedsolution}
 <% endif %>
 <% endfor %>
 
-<% if problem.get("teacher_answer") %>
+<% if problem.get("publication_answer") %>
+\answer{ {{ problem.get("publication_answer", {}).get("content", "") | tex }} }
+<% elif problem.get("teacher_answer") %>
 \answer{ {{ problem.get("teacher_answer", {}).get("content", "") | tex }} }
-<% for issue in issues_by_target.get(problem.get("id", "") ~ ".teacher_answer", []) %>
-\begin{warningbox}
-{{ issue.get("message", "") | tex }}
-<% if issue.get("review_value") %>\par 建议值：{{ issue.get("review_value") | tex }}<% endif %>
-\end{warningbox}
-<% endfor %>
 <% endif %>
 
-<% for issue in issues_by_target.get(problem.get("id"), []) %>
+<% if problem.get("math_review_unresolved") %>
 \begin{warningbox}
-{{ issue.get("message", "") | tex }}
+本题 GPT sol 未处理完成。
 \end{warningbox}
-<% endfor %>
+<% endif %>
+
 <% endfor %>
 
 <% for sup in supplements_by_target.get(section.get("id"), []) %>
@@ -201,11 +196,6 @@
 \end{supplement}
 <% endfor %>
 
-<% for issue in issues_by_target.get(section.get("id"), []) %>
-\begin{warningbox}
-{{ issue.get("message", "") | tex }}
-\end{warningbox}
-<% endfor %>
 
 <% endfor %>
 
@@ -223,35 +213,42 @@
 {{ problem.get("analysis", {}).get("content", "") | tex }}
 \end{observation}
 <% endif %>
-<% if problem.get("teacher_solution") %>
+<% if problem.get("publication_solution") %>
+\begin{solution}
+{{ problem.get("publication_solution", {}).get("content", "") | tex }}
+\end{solution}
+<% elif problem.get("teacher_solution") %>
 \begin{solution}
 {{ problem.get("teacher_solution", {}).get("content", "") | tex }}
 \end{solution}
-<% for issue in issues_by_target.get(problem.get("id", "") ~ ".teacher_solution", []) %>
-\begin{warningbox}
-{{ issue.get("message", "") | tex }}
-\end{warningbox}
-<% endfor %>
-<% endif %>
-<% for sup in supplements_by_target.get(problem.get("id"), []) %>
-<% if sup.get("type") == "derived_solution" %>
+<% elif problem.get("supplement_solution") %>
 \begin{derivedsolution}
-{{ sup.get("content", "") | tex }}
+{{ problem.get("supplement_solution", {}).get("content", "") | tex }}
 \end{derivedsolution}
-<% else %>
+<% endif %>
+
+<% for sup in supplements_by_target.get(problem.get("id"), []) %>
+<% if sup.get("type") != "derived_solution" %>
 \begin{supplement}
 {{ sup.get("content", "") | tex }}
 \end{supplement}
+<% elif not problem.get("publication_solution") %>
+\begin{derivedsolution}
+{{ sup.get("content", "") | tex }}
+\end{derivedsolution}
 <% endif %>
 <% endfor %>
-<% if problem.get("teacher_answer") %>
+
+<% if problem.get("publication_answer") %>
+\answer{ {{ problem.get("publication_answer", {}).get("content", "") | tex }} }
+<% elif problem.get("teacher_answer") %>
 \answer{ {{ problem.get("teacher_answer", {}).get("content", "") | tex }} }
-<% for issue in issues_by_target.get(problem.get("id", "") ~ ".teacher_answer", []) %>
+<% endif %>
+
+<% if problem.get("math_review_unresolved") %>
 \begin{warningbox}
-{{ issue.get("message", "") | tex }}
-<% if issue.get("review_value") %>\par 建议值：{{ issue.get("review_value") | tex }}<% endif %>
+本题 GPT sol 未处理完成。
 \end{warningbox}
-<% endfor %>
 <% endif %>
 <% endfor %>
 <% endif %>

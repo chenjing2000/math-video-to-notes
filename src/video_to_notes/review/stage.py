@@ -1,26 +1,32 @@
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 from typing import Any
 
-from ..config import resolve_resource_path
-from ..errors import StageError
-from ..reconstruction.prompts import load_prompts, render
 from ..reconstruction.provider import build_provider
 from ..stages import StageContext
-from ..util import atomic_write_json, read_json
-from .evidence_support import (
-    collect_evidence_ids_from_targets,
-    select_evidence,
+from .common import (
+    empty_math_summary,
+    factual_inputs,
+    finalize_review,
+    load_review_materials,
+    render_factual_user,
+    render_pedagogical_user,
 )
-from .routing import (
-    collect_all_target_ids,
-    collect_factual_targets,
-    collect_math_targets,
+from .evidence_support import collect_evidence_ids_from_targets, select_evidence
+from .math_core import (
+    apply_math_review_cascade,
+    collect_math_review_targets,
+    factual_context_for_problem,
+    filter_target_for_ids,
+    render_math_user,
+    resolve_api_llm_config,
+    select_math_image_paths,
+    unresolved_target_ids,
+    validate_math_revision_response,
 )
-from .validation import assign_issue_ids, validate_raw_issues
+from .validation import validate_raw_issues
 
 
 def _resolve_project_root(ctx: StageContext) -> Path:
@@ -30,320 +36,160 @@ def _resolve_project_root(ctx: StageContext) -> Path:
     return Path.cwd().resolve()
 
 
-def _load_json(path: Path, description: str) -> dict[str, Any]:
-    if not path.exists():
-        raise StageError(f"缺少 {description}: {path}")
-    data = read_json(path)
-    if not isinstance(data, dict):
-        raise StageError(f"{description} 根节点必须为 object。")
-    return data
-
-
-def _run_reviewer(
-    *,
-    review_type: str,
-    provider,
-    prompt: dict[str, Any],
-    placeholder: str,
-    payload: Any,
-    valid_target_ids: set[str],
-    reject_unreferenced_targets: bool,
-) -> list[dict[str, Any]]:
-    user = render(
-        str(prompt["user"]),
-        placeholder,
-        json.dumps(payload, ensure_ascii=False, indent=2),
-    )
-    result = provider.generate_json(
-        system=str(prompt["system"]),
-        user=user,
-    )
-    return validate_raw_issues(
-        result.get("issues"),
-        review_type=review_type,
-        valid_target_ids=valid_target_ids,
-        reject_unreferenced_targets=reject_unreferenced_targets,
-    )
-
-
 def run_review_stage(ctx: StageContext) -> None:
+    """API transport for the shared review business rules."""
     logger: logging.Logger = ctx.logger
     cfg = ctx.config["review"]
     project_root = _resolve_project_root(ctx)
-
-    lecture_path = ctx.workspace_root / "lecture" / "lecture.json"
-    lecture = _load_json(lecture_path, "lecture.json")
-    if str(lecture.get("stage", "")) not in {
-        "completion_draft",
-        "review_draft",
-    }:
-        raise StageError(
-            "review stage 只接受 completion_draft/review_draft。"
-        )
-
-    timeline_data = _load_json(
-        ctx.workspace_root / "evidence" / "timeline.json",
-        "Evidence Timeline",
+    lecture_path, lecture, timeline, review_prompts, valid_target_ids, reject_unknown = load_review_materials(
+        ctx.workspace_root, ctx.config
     )
-    timeline = timeline_data.get("timeline")
-    if not isinstance(timeline, list):
-        raise StageError("Evidence Timeline.timeline 必须为 list。")
 
-    prompt_path = resolve_resource_path(cfg.get("prompts_file", "package:prompts.yaml"), default_name="prompts.yaml")
-    prompts = load_prompts(prompt_path.resolve())
-    review_prompts = prompts.get("review", {})
-    if not isinstance(review_prompts, dict):
-        raise StageError("prompts.yaml 缺少 review。")
-
-    valid_target_ids = collect_all_target_ids(lecture)
-    reject_unknown = bool(cfg.get("reject_unreferenced_targets", True))
     all_issues: list[dict[str, Any]] = []
     run_report: dict[str, Any] = {}
-    verified_supplements: set[str] = set()
 
-    # Factual reviewer: important problem fields + low-confidence content.
+    # 1) Factual review always precedes math review.
+    factual_issues: list[dict[str, Any]] = []
     factual_cfg = cfg.get("factual", {})
     if bool(factual_cfg.get("enabled", True)):
-        factual_targets = collect_factual_targets(
-            lecture,
-            trigger_statuses={
-                str(x)
-                for x in factual_cfg.get(
-                    "trigger_statuses",
-                    ["probable", "uncertain", "conflict"],
-                )
-            },
-            always_review_problem_fields={
-                str(x)
-                for x in factual_cfg.get(
-                    "always_review_problem_fields",
-                    ["statement", "teacher_solution", "teacher_answer"],
-                )
-            },
-        )
-
+        factual_targets, evidence = factual_inputs(lecture, timeline, factual_cfg)
         if factual_targets:
-            evidence_ids = collect_evidence_ids_from_targets(factual_targets)
-            factual_evidence = select_evidence(
-                timeline,
-                evidence_ids=evidence_ids,
+            provider = build_provider(factual_cfg["llm"], project_root=project_root)
+            prompt = review_prompts.get("factual", {})
+            raw = provider.generate_json(
+                system=str(prompt["system"]),
+                user=render_factual_user(prompt, factual_targets, evidence),
             )
-            provider = build_provider(
-                factual_cfg["llm"],
-                project_root=project_root,
-            )
-
-            factual_prompt = review_prompts.get("factual", {})
-            user_payload = {
-                "targets": factual_targets,
-                "evidence": factual_evidence,
-            }
-            # Use two replacements because render handles one placeholder.
-            user = str(factual_prompt["user"])
-            user = user.replace(
-                "{{TARGETS_JSON}}",
-                json.dumps(
-                    factual_targets,
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-            )
-            user = user.replace(
-                "{{EVIDENCE_JSON}}",
-                json.dumps(
-                    factual_evidence,
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-            )
-            result = provider.generate_json(
-                system=str(factual_prompt["system"]),
-                user=user,
-            )
-            issues = validate_raw_issues(
-                result.get("issues"),
+            factual_issues = validate_raw_issues(
+                raw.get("issues"),
                 review_type="factual",
                 valid_target_ids=valid_target_ids,
                 reject_unreferenced_targets=reject_unknown,
             )
-            all_issues.extend(issues)
+            all_issues.extend(factual_issues)
             run_report["factual"] = {
                 "triggered": True,
                 "targets": len(factual_targets),
-                "evidence_segments": len(factual_evidence),
-                "issues": len(issues),
+                "issues": len(factual_issues),
             }
         else:
-            run_report["factual"] = {
-                "triggered": False,
-                "targets": 0,
-                "evidence_segments": 0,
-                "issues": 0,
-            }
+            run_report["factual"] = {"triggered": False, "targets": 0, "issues": 0}
     else:
         run_report["factual"] = {"enabled": False}
 
-    # Math reviewer: mathematics/problem content only.
+    # 2) Every problem with any solution process gets one Sol Medium request.
+    #    Only unresolved targets from that problem are escalated to Sol High.
     math_cfg = cfg.get("math", {})
-    if bool(math_cfg.get("enabled", True)):
-        math_targets = collect_math_targets(
-            lecture,
-            review_all_problems=bool(
-                math_cfg.get("review_all_problems", True)
-            ),
+    math_targets = collect_math_review_targets(lecture) if bool(math_cfg.get("enabled", True)) else []
+    medium_results: dict[str, dict[str, Any]] = {}
+    high_results: dict[str, dict[str, Any]] = {}
+    escalated_problem_count = 0
+    math_summary = empty_math_summary()
+
+    if math_targets:
+        primary_model = str(math_cfg.get("primary_model", "sol-medium"))
+        high_model = str(math_cfg.get("escalation_model", "sol-high"))
+        primary_provider = build_provider(
+            resolve_api_llm_config(math_cfg, primary_model), project_root=project_root
         )
-        if math_targets:
-            provider = build_provider(
-                math_cfg["llm"],
-                project_root=project_root,
+        high_provider = None
+        max_images = int(math_cfg.get("max_images_per_problem", 2))
+
+        for target in math_targets:
+            pid = str(target.get("target_id", ""))
+            evidence_ids = collect_evidence_ids_from_targets([target])
+            evidence = select_evidence(timeline, evidence_ids=evidence_ids)
+            factual_context = factual_context_for_problem(factual_issues, pid)
+            images = select_math_image_paths(
+                lecture,
+                target,
+                timeline,
+                workspace_root=ctx.workspace_root,
+                max_images=max_images,
             )
             prompt = review_prompts.get("math", {})
-            user = render(str(prompt["user"]), "TARGETS_JSON", json.dumps(math_targets, ensure_ascii=False, indent=2))
-            result = provider.generate_json(system=str(prompt["system"]), user=user)
-            values = result.get("verified_supplements", [])
-            if not isinstance(values, list):
-                raise StageError("math review.verified_supplements 必须为 list。")
-            verified_supplements.update(str(x) for x in values)
-            issues = validate_raw_issues(
-                result.get("issues"), review_type="math", valid_target_ids=valid_target_ids,
-                reject_unreferenced_targets=reject_unknown,
+            user = render_math_user(
+                prompt,
+                target,
+                evidence=evidence,
+                factual_issues=factual_context,
+                image_paths=images,
             )
-            all_issues.extend(issues)
-            run_report["math"] = {
-                "triggered": True,
-                "targets": len(math_targets),
-                "issues": len(issues),
-            }
-        else:
-            run_report["math"] = {
-                "triggered": False,
-                "targets": 0,
-                "issues": 0,
-            }
-    else:
-        run_report["math"] = {"enabled": False}
+            raw = primary_provider.generate_json(
+                system=str(prompt["system"]), user=user, image_paths=[Path(x) for x in images]
+            )
+            medium = validate_math_revision_response(raw, [target])
+            medium_results[pid] = medium
+            unresolved = unresolved_target_ids(medium)
+            if unresolved:
+                escalated_problem_count += 1
+                if high_provider is None:
+                    high_provider = build_provider(
+                        resolve_api_llm_config(math_cfg, high_model), project_root=project_root
+                    )
+                high_target = filter_target_for_ids(target, unresolved)
+                high_prompt = review_prompts.get("math_high", {})
+                high_user = render_math_user(
+                    high_prompt,
+                    high_target,
+                    evidence=evidence,
+                    factual_issues=factual_context,
+                    image_paths=images,
+                )
+                high_raw = high_provider.generate_json(
+                    system=str(high_prompt["system"]),
+                    user=high_user,
+                    image_paths=[Path(x) for x in images],
+                )
+                high_results[pid] = validate_math_revision_response(high_raw, [high_target])
 
-    # Pedagogical reviewer: one global pass, if enabled.
-    pedagogical_cfg = cfg.get("pedagogical", {})
-    if (
-        bool(pedagogical_cfg.get("enabled", True))
-        and bool(pedagogical_cfg.get("whole_lecture", True))
-    ):
-        provider = build_provider(
-            pedagogical_cfg["llm"],
-            project_root=project_root,
+        math_summary = apply_math_review_cascade(
+            lecture, math_targets, medium_results=medium_results, high_results=high_results
         )
-        prompt = review_prompts.get("pedagogical", {})
-        pedagogical_payload = {
-            "metadata": lecture.get("metadata", {}),
-            "overview": lecture.get("overview", {}),
-            "sections": lecture.get("sections", []),
-            "problems": lecture.get("problems", []),
-            "supplements": lecture.get("supplements", []),
-            "summary": lecture.get("summary", []),
+        run_report["math"] = {
+            "triggered": True,
+            "problems": len(math_targets),
+            "medium_requests": len(math_targets),
+            "high_escalations": escalated_problem_count,
+            "high_escalation_rate": round(escalated_problem_count / len(math_targets), 4),
+            "verified": math_summary["verified"],
+            "revised": math_summary["revised"],
+            "unresolved": math_summary["unresolved"],
         }
-        issues = _run_reviewer(
+    else:
+        run_report["math"] = {"triggered": False, "problems": 0}
+
+    # 3) Pedagogical review sees the publication-oriented math view.
+    pedagogical_cfg = cfg.get("pedagogical", {})
+    if bool(pedagogical_cfg.get("enabled", True)) and bool(pedagogical_cfg.get("whole_lecture", True)):
+        provider = build_provider(pedagogical_cfg["llm"], project_root=project_root)
+        prompt = review_prompts.get("pedagogical", {})
+        user = render_pedagogical_user(prompt, lecture)
+        raw = provider.generate_json(system=str(prompt["system"]), user=user)
+        issues = validate_raw_issues(
+            raw.get("issues"),
             review_type="pedagogical",
-            provider=provider,
-            prompt=prompt,
-            placeholder="LECTURE_JSON",
-            payload=pedagogical_payload,
             valid_target_ids=valid_target_ids,
             reject_unreferenced_targets=reject_unknown,
         )
         all_issues.extend(issues)
-        run_report["pedagogical"] = {
-            "triggered": True,
-            "issues": len(issues),
-        }
+        run_report["pedagogical"] = {"triggered": True, "issues": len(issues)}
     else:
-        run_report["pedagogical"] = {
-            "triggered": False,
-            "issues": 0,
-        }
+        run_report["pedagogical"] = {"triggered": False, "issues": 0}
 
-    issues = assign_issue_ids(all_issues)
-
-    math_review_ran = bool(run_report.get("math", {}).get("triggered", False))
-    if math_review_ran:
-        math_issues = [x for x in issues if x.get("review_type") == "math"]
-        derived_ids = {str(x.get("id", "")) for x in lecture.get("supplements", []) if isinstance(x, dict) and x.get("type") == "derived_solution"}
-        unknown_verified = verified_supplements - derived_ids
-        if unknown_verified:
-            raise StageError("math review 返回未知 supplement id: " + ", ".join(sorted(unknown_verified)))
-        for supplement in lecture.get("supplements", []):
-            if not isinstance(supplement, dict) or supplement.get("type") != "derived_solution":
-                continue
-            sid = str(supplement.get("id", ""))
-            blockers = [x for x in math_issues if str(x.get("target_id", "")) == sid and str(x.get("severity", "")) in {"warning", "error"}]
-            if blockers:
-                supplement["math_review_status"] = "rejected"
-                supplement["status"] = "uncertain"
-            elif sid in verified_supplements:
-                supplement["math_review_status"] = "verified"
-                supplement["status"] = "confirmed"
-            else:
-                supplement["math_review_status"] = "pending"
-                supplement["status"] = "uncertain"
-
-    lecture.setdefault("review", {})
-    lecture["review"]["issues"] = issues
-    lecture["review"]["summary"] = {
-        "total": len(issues),
-        "open": sum(1 for x in issues if x["status"] == "open"),
-        "by_type": {
-            review_type: sum(
-                1 for x in issues if x["review_type"] == review_type
-            )
-            for review_type in ("factual", "math", "pedagogical")
-        },
-        "by_severity": {
-            severity: sum(
-                1 for x in issues if x["severity"] == severity
-            )
-            for severity in ("info", "warning", "error")
-        },
-    }
-    lecture.pop("audit", None)
-    lecture["stage"] = "review_draft"
-
-    atomic_write_json(lecture_path, lecture)
-
-    review_dir = ctx.workspace_root / "review"
-    review_dir.mkdir(parents=True, exist_ok=True)
-    atomic_write_json(
-        review_dir / "issues.json",
-        {
-            "schema_version": "1.0",
-            "issues": issues,
-        },
+    report = finalize_review(
+        workspace_root=ctx.workspace_root,
+        lecture_path=lecture_path,
+        lecture=lecture,
+        raw_issues=all_issues,
+        math_summary=math_summary,
+        mode="api",
+        reviewers=run_report,
     )
-
-    report = {
-        "schema_version": "1.0",
-        "stage": "review",
-        "reviewers": run_report,
-        "issues": lecture["review"]["summary"],
-        "verified_derived_solutions": sum(1 for x in lecture.get("supplements", []) if x.get("type") == "derived_solution" and x.get("math_review_status") == "verified"),
-        "quality": {
-            "complete": all(x.get("math_review_status") == "verified" for x in lecture.get("supplements", []) if isinstance(x, dict) and x.get("type") == "derived_solution")
-            and not any(
-                x.get("status") == "open"
-                and (x.get("severity") == "error" or x.get("label") == "possible_teacher_error")
-                for x in issues
-            ),
-        },
-        "output": str(lecture_path),
-    }
-    atomic_write_json(
-        ctx.workspace_root / "reports" / "review_report.json",
-        report,
-    )
-
     logger.info(
-        "[review] issues=%d factual=%d math=%d pedagogical=%d",
-        len(issues),
-        lecture["review"]["summary"]["by_type"]["factual"],
-        lecture["review"]["summary"]["by_type"]["math"],
-        lecture["review"]["summary"]["by_type"]["pedagogical"],
+        "[review] issues=%d math_problems=%d high_escalations=%d unresolved=%d",
+        int(report["issues"].get("total", 0)),
+        len(math_targets),
+        escalated_problem_count,
+        int(math_summary.get("unresolved", 0)),
     )

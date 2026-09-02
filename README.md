@@ -29,7 +29,7 @@ visual
 → reconstruction / Terra
 → completion / Terra
 → factual review / Luna High
-→ math review / Sol
+→ math review / Sol Medium（未解决项 → Sol High）
 → pedagogical review / Terra
 → render
 → audit
@@ -61,7 +61,8 @@ docs/CODEX_ONE_SHOT_WORKFLOW.md
 reconstruction       -> terra
 completion           -> terra
 review factual       -> luna-high
-review math          -> sol
+review math          -> sol-medium
+review unresolved     -> sol-high
 review pedagogical   -> terra
 ```
 
@@ -100,7 +101,7 @@ uv pip install -e .
 ### Review
 
 - Luna High：事实忠实性；
-- Sol：数学正确性及 derived solution 独立验算；
+- Sol Medium：所有已有解题过程逐项验算；发现错误时直接返回修正后的最终解法/答案；
 - Terra：结构、图文完整性和教学可读性。
 
 ### Render / Audit
@@ -146,7 +147,7 @@ video-to-notes audit "VIDEO"
 - request 级断点恢复：完全相同且校验通过的 response 会直接复用，只重做缺失/失效请求；
 - reconstruction/completion 的 merge 只有在全部输入 chunk 都被复用时才会复用，避免旧 merge 混入新 chunk；
 - `lecture/reconstruction.json`、`completed.json`、`reviewed.json`：语义阶段不可变快照；
-- Sol 必须通过 `verified_supplements` 逐条确认 LLM 补充证明；
+- Sol Medium 必须覆盖每一个已有解题过程；正确则确认，错误则直接修订，最终 PDF 使用审过后的版本；
 - 同名但内容不同的视频自动分离 workspace；
 - prompts/default config/LaTeX template 内置为 package resources，不依赖当前工作目录；
 - `reports/performance_report.json/.md` 记录阶段耗时、request 输入规模、图片引用、复用次数与节省量；
@@ -175,3 +176,8 @@ pytest -q tests --ignore=tests/integration
 包含 XeLaTeX 的集成测试建议逐文件运行，避免多个外部子进程堆在同一个 pytest 进程中。
 
 当前版本：`1.2.1`。
+
+### 数学终审
+
+所有存在解题过程的题目都先由 Sol Medium 逐题终审。正确内容直接保留原文；只有需要修正时才返回完整修正版。Medium 无法解决的 target 才升级 Sol High。Sol High 仍无法解决时，程序继续生成正式 LaTeX/PDF，并在该题中注明“本题 GPT sol 未处理完成。”。Codex 与 API 两条路径共用同一套数学审核核心。
+

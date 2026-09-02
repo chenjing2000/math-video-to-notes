@@ -144,3 +144,14 @@ def test_review_required_is_terminal_but_not_final_quality(tmp_path: Path) -> No
     result = workflow._terminal_result()
     assert result.status == "WORKFLOW_COMPLETE_REVIEW_REQUIRED"
     assert result.audit_verdict == "REVIEW_REQUIRED"
+
+
+def test_pass_with_notes_is_terminal_complete(tmp_path: Path) -> None:
+    ws = _workspace(tmp_path)
+    workflow = _workflow(ws)
+    (ws.latex / "lecture.tex").write_text("tex", encoding="utf-8")
+    (ws.output / "lecture.pdf").write_bytes(b"pdf")
+    atomic_write_json(ws.reports / "quality_report.json", {"verdict": "PASS_WITH_NOTES"})
+    result = workflow._terminal_result()
+    assert result.status == "WORKFLOW_COMPLETE"
+    assert result.audit_verdict == "PASS_WITH_NOTES"

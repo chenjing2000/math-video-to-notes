@@ -27,12 +27,6 @@ def build_render_context(lecture: dict[str, Any]) -> dict[str, Any]:
         if target_id:
             supplements_by_target[target_id].append(supplement)
 
-    issues_by_target: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for issue in lecture.get("review", {}).get("issues", []):
-        target_id = str(issue.get("target_id", "")).strip()
-        if target_id:
-            issues_by_target[target_id].append(issue)
-
     figures_by_problem: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for figure in lecture.get("figures", []):
         target_id = (
@@ -47,6 +41,5 @@ def build_render_context(lecture: dict[str, Any]) -> dict[str, Any]:
         "problems_by_section": dict(problems_by_section),
         "unassigned_problems": unassigned_problems,
         "supplements_by_target": dict(supplements_by_target),
-        "issues_by_target": dict(issues_by_target),
         "figures_by_problem": dict(figures_by_problem),
     }

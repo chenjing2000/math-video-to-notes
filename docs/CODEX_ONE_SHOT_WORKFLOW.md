@@ -48,7 +48,7 @@ reconstruction apply
 -> Codex/Terra
 -> completion apply
 -> prepare review
--> Codex/Luna High + Sol + Terra
+-> Codex/Luna High + Sol Medium + Terra
 -> review apply
 -> render
 -> audit
@@ -64,7 +64,7 @@ Terminal output contains:
 STATUS: WORKFLOW_COMPLETE
 LATEX: ...\latex\lecture.tex
 PDF: ...\output\lecture.pdf
-AUDIT: PASS
+AUDIT: PASS  # or PASS_WITH_NOTES when Sol High still has unresolved targets
 AUDIT_REPORT: ...\reports\quality_report.md
 ```
 

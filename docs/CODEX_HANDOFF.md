@@ -114,4 +114,4 @@ Reconstruction request Evidence items now include `frames` with real frame id/ti
 
 Completion request chunks include inferred `requires_solution` and `solution_completeness` data. For incomplete/missing/uncertain proof tasks with sufficient conditions, Terra must emit `type=derived_solution` instead of merely preserving the gap.
 
-Math review targets now include problem-targeted supplements. Sol must independently validate every `derived_solution`. A clean math review marks the supplement `math_review_status=verified` during apply.
+Math review targets now include problem-targeted supplements. Sol Medium must review every existing solution process. Correct content is confirmed; incorrect content is directly revised into a publishable solution/answer. Derived solutions remain mandatory math-review targets.

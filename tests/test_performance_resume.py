@@ -5,7 +5,7 @@ from pathlib import Path
 
 from video_to_notes.config import load_config
 from video_to_notes.handoff.reconstruction import prepare_reconstruction
-from video_to_notes.performance import build_performance_report, record_handoff_prepare, record_stage, request_metrics
+from video_to_notes.performance import build_performance_report, record_handoff_prepare, record_stage, request_metrics, write_performance_report
 from video_to_notes.util import atomic_write_json, read_json
 
 
@@ -66,7 +66,7 @@ def test_performance_report_counts_reuse(tmp_path: Path) -> None:
     request = {
         "request_id": "r1",
         "task_type": "review_math",
-        "required_model": "sol",
+        "required_model": "sol-medium",
         "system": "check",
         "user": "proof image.jpg",
     }
@@ -81,6 +81,8 @@ def test_performance_report_counts_reuse(tmp_path: Path) -> None:
     assert report["llm"]["requests_generated"] == 1
     assert report["llm"]["requests_reused"] == 1
     assert report["llm"]["avoided_input_characters"] == metrics["input_characters"]
+    assert not (ws / "reports" / "performance_report.md").exists()
+    write_performance_report(ws)
     assert (ws / "reports" / "performance_report.md").exists()
 
 
@@ -123,19 +125,14 @@ def test_reconstruction_input_change_invalidates_old_response_ids(tmp_path: Path
     assert not (ws / "responses/reconstruction/chunk_0000.json").exists()
 
 
-def test_review_prepare_reuses_each_reviewer_independently(tmp_path: Path) -> None:
+def test_review_prepare_reuses_phased_requests_and_invalidates_downstream_phase(tmp_path: Path) -> None:
     from video_to_notes.handoff.review import prepare_review
 
     ws = _workspace(tmp_path)
     atomic_write_json(ws / "lecture" / "lecture.json", {
-        "schema_version": "1.0",
-        "stage": "completion_draft",
-        "metadata": {},
-        "overview": {},
-        "sections": [],
+        "schema_version": "1.0", "stage": "completion_draft", "metadata": {}, "overview": {}, "sections": [],
         "problems": [{
-            "id": "P01",
-            "title": "例题",
+            "id": "P01", "title": "例题",
             "statement": {"content": "求证 A=B", "origin": "video", "evidence_ids": ["ev_0001"], "status": "confirmed"},
             "teacher_solution": {"content": "推导", "origin": "video", "evidence_ids": ["ev_0002"], "status": "confirmed"},
             "teacher_answer": {"content": "A=B", "origin": "video", "evidence_ids": ["ev_0003"], "status": "confirmed"},
@@ -153,26 +150,47 @@ def test_review_prepare_reuses_each_reviewer_independently(tmp_path: Path) -> No
         {"id": "ev_0003", "start": 2, "end": 3, "frame_ids": [], "frames": [], "transcript_text": "答案", "status": "confirmed"},
     ]})
     config = load_config()
-    first = prepare_review(workspace_root=ws, config=config)
-    assert set(first["required_outputs"]) == {"factual.json", "math.json", "pedagogical.json"}
 
-    for name in first["required_outputs"]:
-        req = json.loads((ws / "tasks/review" / name.replace(".json", ".request.json")).read_text(encoding="utf-8"))
-        payload = {"request_id": req["request_id"], "issues": []}
-        if name == "math.json":
-            payload["verified_supplements"] = ["sup_001"]
-        atomic_write_json(ws / "responses/review" / name, payload)
+    first = prepare_review(workspace_root=ws, config=config)
+    assert first["phase"] == "factual"
+    assert first["required_outputs"] == ["factual.json"]
+    fact_req = read_json(ws / "tasks/review/factual.request.json")
+    atomic_write_json(ws / "responses/review/factual.json", {"request_id": fact_req["request_id"], "issues": []})
 
     second = prepare_review(workspace_root=ws, config=config)
-    assert set(second["reused_outputs"]) == {"factual.json", "math.json", "pedagogical.json"}
+    medium_name = "math_P01_medium.json"
+    assert second["phase"] == "math_medium"
+    assert set(second["required_outputs"]) == {"factual.json", medium_name}
+    assert "factual.json" in second["reused_outputs"]
+    medium_req = read_json(ws / "tasks/review/math_P01_medium.request.json")
+    atomic_write_json(ws / "responses/review" / medium_name, {
+        "request_id": medium_req["request_id"],
+        "reviewed_solutions": [
+            {"target_id": "P01.teacher_solution", "status": "verified"},
+            {"target_id": "sup_001", "status": "verified"},
+        ],
+        "reviewed_answers": [{"target_id": "P01.teacher_answer", "status": "verified"}],
+    })
 
-    # Corrupt only math; factual and pedagogical must remain reusable.
-    bad = read_json(ws / "responses/review/math.json")
-    bad["request_id"] = "stale"
-    atomic_write_json(ws / "responses/review/math.json", bad)
     third = prepare_review(workspace_root=ws, config=config)
-    assert set(third["reused_outputs"]) == {"factual.json", "pedagogical.json"}
-    assert not (ws / "responses/review/math.json").exists()
+    assert third["phase"] == "pedagogical"
+    assert {"factual.json", medium_name}.issubset(set(third["reused_outputs"]))
+    ped_req = read_json(ws / "tasks/review/pedagogical.request.json")
+    atomic_write_json(ws / "responses/review/pedagogical.json", {"request_id": ped_req["request_id"], "issues": []})
+
+    fourth = prepare_review(workspace_root=ws, config=config)
+    assert fourth["phase"] == "ready"
+    assert set(fourth["reused_outputs"]) == {"factual.json", medium_name, "pedagogical.json"}
+
+    # Corrupt Medium. Factual remains reusable, while dependent pedagogical work is invalidated.
+    bad = read_json(ws / "responses/review" / medium_name)
+    bad["request_id"] = "stale"
+    atomic_write_json(ws / "responses/review" / medium_name, bad)
+    fifth = prepare_review(workspace_root=ws, config=config)
+    assert fifth["phase"] == "math_medium"
+    assert set(fifth["reused_outputs"]) == {"factual.json"}
+    assert not (ws / "responses/review" / medium_name).exists()
+    assert not (ws / "responses/review/pedagogical.json").exists()
 
 
 def test_cli_accepts_performance_command() -> None:

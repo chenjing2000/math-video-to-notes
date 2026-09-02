@@ -482,4 +482,4 @@ A mathematically derived completion is stored only as a supplement:
 }
 ```
 
-After a clean Sol math review, `math_review_status` becomes `verified` and `status` becomes `confirmed`.
+After Sol Medium review, the published form is stored in reviewed fields; derived solutions become `math_review_status=verified` when status is verified or revised.

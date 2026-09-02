@@ -113,24 +113,47 @@ def test_sprint10_rerun_completion_from_rendered_and_verify_derived_solution(tmp
     assert completed["supplements"][0]["type"] == "derived_solution"
     assert completed["supplements"][0]["math_review_status"] == "pending"
 
-    prep_review = _run(project_root, env, "--config", str(config), "review", "prepare", str(video))
-    assert prep_review.returncode == 0, prep_review.stderr
-    math_task = json.loads((ws / "tasks" / "review" / "math.request.json").read_text(encoding="utf-8"))
-    assert math_task["required_model"] == "sol"
-    assert "sup_001" in math_task["user"]
-
-    manifest = json.loads((ws / "tasks" / "review" / "manifest.json").read_text(encoding="utf-8"))
+    review_tasks = ws / "tasks" / "review"
     review_responses = ws / "responses" / "review"
     review_responses.mkdir(parents=True, exist_ok=True)
-    for name in manifest["required_outputs"]:
-        req = json.loads((ws / "tasks" / "review" / name.replace(".json", ".request.json")).read_text(encoding="utf-8"))
-        payload = {"request_id": req["request_id"], "issues": []}
-        if name == "math.json":
-            payload["verified_supplements"] = ["sup_001"]
-        (review_responses / name).write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    prep_review = _run(project_root, env, "--config", str(config), "review", "prepare", str(video))
+    assert prep_review.returncode == 0, prep_review.stderr
+    factual_task = json.loads((review_tasks / "factual.request.json").read_text(encoding="utf-8"))
+    (review_responses / "factual.json").write_text(json.dumps({"request_id": factual_task["request_id"], "issues": []}, ensure_ascii=False), encoding="utf-8")
+
+    prep_review = _run(project_root, env, "--config", str(config), "review", "prepare", str(video))
+    assert prep_review.returncode == 0, prep_review.stderr
+    math_task = json.loads((review_tasks / "math_P03_medium.request.json").read_text(encoding="utf-8"))
+    assert math_task["required_model"] == "sol-medium"
+    assert "sup_001" in math_task["user"]
+    assert '"completeness": "incomplete"' in math_task["user"]
+    (review_responses / "math_P03_medium.json").write_text(json.dumps({
+        "request_id": math_task["request_id"],
+        "reviewed_solutions": [
+            {"target_id": "P03.teacher_solution", "status": "verified"},
+            {"target_id": "sup_001", "status": "verified"},
+        ],
+        "reviewed_answers": [{"target_id": "P03.teacher_answer", "status": "verified"}],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    prep_review = _run(project_root, env, "--config", str(config), "review", "prepare", str(video))
+    assert prep_review.returncode == 0, prep_review.stderr
+    pedagogical_task = json.loads((review_tasks / "pedagogical.request.json").read_text(encoding="utf-8"))
+    (review_responses / "pedagogical.json").write_text(json.dumps({"request_id": pedagogical_task["request_id"], "issues": []}, ensure_ascii=False), encoding="utf-8")
+
+    prep_review = _run(project_root, env, "--config", str(config), "review", "prepare", str(video))
+    assert prep_review.returncode == 0, prep_review.stderr
+    manifest = json.loads((review_tasks / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["phase"] == "ready"
 
     applied_review = _run(project_root, env, "--config", str(config), "review", "apply", str(video))
     assert applied_review.returncode == 0, applied_review.stderr
     reviewed = json.loads((ws / "lecture" / "lecture.json").read_text(encoding="utf-8"))
     assert reviewed["supplements"][0]["math_review_status"] == "verified"
     assert reviewed["supplements"][0]["status"] == "confirmed"
+    assert reviewed["problems"][0]["teacher_solution"]["content"] == teacher_solution
+    # Incomplete teacher process is not expanded by Sol; the verified Completion derivation is published.
+    assert reviewed["problems"][0]["publication_solution"]["source_target_id"] == "sup_001"
+    assert "CD=2CE" in reviewed["problems"][0]["publication_solution"]["content"]
+

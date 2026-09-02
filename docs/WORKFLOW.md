@@ -516,7 +516,7 @@ Reconstruction: preserve source + mark incomplete + choose figure evidence
 Completion: add explicit derived_solution where required
         |
         v
-Math Review (Sol): independently verify derived_solution
+Math Review (Sol Medium): review every existing solution process and directly return corrected publishable solutions/answers
         |
         v
 Render: resolve/copy evidence figures + render source/supplement separately
@@ -524,3 +524,14 @@ Render: resolve/copy evidence figures + render source/supplement separately
         v
 Audit: block missing figures or unverified incomplete solutions
 ```
+
+
+## v1.2.3 Math Review Hardening
+
+Review order is now factual -> per-problem Sol Medium -> unresolved-target Sol High -> pedagogical.
+`verified` preserves immutable source text, `revised` publishes the corrected version, and `unresolved` never publishes model guesses. Sol High unresolved does not block rendering; the problem receives the note `本题 GPT sol 未处理完成。`. Geometry math review requests include real image paths. Codex and API use the same `review/math_core.py` business rules.
+
+
+## v1.2.4 Code Cleanup
+
+v1.2.4 is behavior-preserving cleanup. It removes the retired audit engine and compatibility shim, makes `resources/default.yaml` the single source of default configuration, shares a thin set of Review data/finalization helpers between Codex and API transports, and records raw performance metrics without regenerating reports on every event. Model routing, review behavior, lecture/PDF publication rules, and the one-shot workflow are unchanged.
