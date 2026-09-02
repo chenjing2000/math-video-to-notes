@@ -1,0 +1,268 @@
+% !TEX program = xelatex
+\documentclass[12pt]{ctexart}
+
+\usepackage[a4paper,margin=2.2cm]{geometry}
+\usepackage{graphicx}
+\usepackage{amsmath,amssymb}
+\usepackage{xcolor}
+\usepackage{float}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage[hidelinks]{hyperref}
+\usepackage{longtable}
+\usepackage{array}
+
+\definecolor{topicblue}{RGB}{0,82,155}
+\definecolor{ansgreen}{RGB}{0,110,60}
+\definecolor{warnred}{RGB}{165,30,30}
+\definecolor{supgray}{RGB}{90,90,90}
+
+\captionsetup{font=small,labelfont=bf,skip=4pt}
+\setlength{\parindent}{2em}
+\linespread{1.18}
+\setlist[itemize]{leftmargin=2em}
+\setlist[enumerate]{leftmargin=2.2em}
+
+\newenvironment{knowledge}{%
+  \par\medskip\noindent{\color{topicblue}\bfseries 【知识点】}\par\nopagebreak\smallskip}
+{\par\smallskip}
+
+\newenvironment{observation}{%
+  \par\medskip\noindent{\color{topicblue}\bfseries 【关键观察】}\par\nopagebreak\smallskip}
+{\par\smallskip}
+
+\newenvironment{method}{%
+  \par\medskip\noindent{\color{topicblue}\bfseries 【方法】}\par\nopagebreak\smallskip}
+{\par\smallskip}
+
+\newenvironment{problem}[1]{%
+  \par\medskip\noindent{\color{topicblue}\bfseries 【题目】(#1)}\par\nopagebreak\smallskip}
+{\par\smallskip}
+
+\newenvironment{solution}{%
+  \par\noindent{\color{topicblue}\bfseries 【老师解法】}\par\nopagebreak\smallskip}
+{\par\smallskip}
+
+\newenvironment{supplement}{%
+  \par\noindent{\color{supgray}\bfseries 【讲义补充】}\par\nopagebreak\smallskip}
+{\par\smallskip}
+
+\newenvironment{derivedsolution}{%
+  \par\noindent{\color{supgray}\bfseries 【讲义补充推导】}\par\nopagebreak\smallskip}
+{\par\smallskip}
+
+\newenvironment{warningbox}{%
+  \par\noindent{\color{warnred}\bfseries 【审校提示】}\par\nopagebreak\smallskip}
+{\par\smallskip}
+
+\newcommand{\answer}[1]{%
+  \par\noindent{\color{ansgreen}\bfseries 【答案】}#1\par\medskip}
+
+\newcommand{\shot}[3]{%
+  \begin{figure}[H]
+    \centering
+    \includegraphics[width=#1\textwidth]{images/#2}
+    \caption{#3}
+  \end{figure}}
+
+\title{\textbf{ {{ lecture.get("metadata", {}).get("title", "课程讲义") | tex }} }}
+\author{}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+<% if lecture.get("metadata") or lecture.get("overview") %>
+\begin{center}
+\renewcommand{\arraystretch}{1.25}
+\begin{tabular}{>{\bfseries}p{0.20\textwidth}p{0.70\textwidth}}
+<% if lecture.get("overview", {}).get("topic") %>课题 & {{ lecture.get("overview", {}).get("topic") | tex }} \\<% endif %>
+<% if lecture.get("overview", {}).get("main_line") %>主线 & {{ lecture.get("overview", {}).get("main_line") | tex }} \\<% endif %>
+<% if lecture.get("metadata", {}).get("source") %>视频来源 & {{ lecture.get("metadata", {}).get("source") | tex }} \\<% endif %>
+<% if lecture.get("metadata", {}).get("duration") %>视频时长 & {{ lecture.get("metadata", {}).get("duration") | tex }} \\<% endif %>
+\end{tabular}
+\end{center}
+<% endif %>
+
+<% if lecture.get("overview", {}).get("learning_objectives") %>
+\section*{本讲目标}
+\begin{itemize}
+<% for item in lecture.get("overview", {}).get("learning_objectives", []) %>
+  \item {{ item | tex }}
+<% endfor %>
+\end{itemize}
+<% endif %>
+
+<% if lecture.get("overview", {}).get("core_methods") %>
+\section*{核心方法}
+\begin{itemize}
+<% for item in lecture.get("overview", {}).get("core_methods", []) %>
+  \item {{ item | tex }}
+<% endfor %>
+\end{itemize}
+<% endif %>
+
+\tableofcontents
+\newpage
+
+<% for section in lecture.get("sections", []) %>
+\section{ {{ section.get("title", "未命名章节") | tex }} }
+
+<% for block in section.get("blocks", []) %>
+<% if block.get("type") in ["knowledge", "definition", "theorem", "property"] %>
+\begin{knowledge}
+{{ block.get("content", "") | tex }}
+\end{knowledge}
+<% elif block.get("type") == "observation" %>
+\begin{observation}
+{{ block.get("content", "") | tex }}
+\end{observation}
+<% elif block.get("type") == "method" %>
+\begin{method}
+{{ block.get("content", "") | tex }}
+\end{method}
+<% elif block.get("type") == "warning" %>
+\begin{warningbox}
+{{ block.get("content", "") | tex }}
+\end{warningbox}
+<% else %>
+{{ block.get("content", "") | tex }}
+
+<% endif %>
+<% endfor %>
+
+<% for problem in problems_by_section.get(section.get("id"), []) %>
+\begin{problem}{ {{ (problem.get("title") or problem.get("id", "未命名题目")) | tex }} }
+<% if problem.get("statement") %>
+{{ problem.get("statement", {}).get("content", "") | tex }}
+<% endif %>
+\end{problem}
+
+<% for issue in issues_by_target.get(problem.get("id", "") ~ ".statement", []) %>
+\begin{warningbox}
+{{ issue.get("message", "") | tex }}
+\end{warningbox}
+<% endfor %>
+
+<% for fig in figures_by_problem.get(problem.get("id"), []) %>
+\shot{ {{- fig.get("width", "0.92") -}} }{ {{- fig.get("publication_name", "") | tex -}} }{ {{- fig.get("caption", "视频关键画面") | tex -}} }
+<% endfor %>
+
+<% if problem.get("analysis") %>
+\begin{observation}
+{{ problem.get("analysis", {}).get("content", "") | tex }}
+\end{observation}
+<% endif %>
+
+<% if problem.get("teacher_solution") %>
+\begin{solution}
+{{ problem.get("teacher_solution", {}).get("content", "") | tex }}
+\end{solution}
+<% for issue in issues_by_target.get(problem.get("id", "") ~ ".teacher_solution", []) %>
+\begin{warningbox}
+{{ issue.get("message", "") | tex }}
+\end{warningbox}
+<% endfor %>
+<% endif %>
+
+<% for sup in supplements_by_target.get(problem.get("id"), []) %>
+<% if sup.get("type") == "derived_solution" %>
+\begin{derivedsolution}
+{{ sup.get("content", "") | tex }}
+\end{derivedsolution}
+<% else %>
+\begin{supplement}
+{{ sup.get("content", "") | tex }}
+\end{supplement}
+<% endif %>
+<% endfor %>
+
+<% if problem.get("teacher_answer") %>
+\answer{ {{ problem.get("teacher_answer", {}).get("content", "") | tex }} }
+<% for issue in issues_by_target.get(problem.get("id", "") ~ ".teacher_answer", []) %>
+\begin{warningbox}
+{{ issue.get("message", "") | tex }}
+<% if issue.get("review_value") %>\par 建议值：{{ issue.get("review_value") | tex }}<% endif %>
+\end{warningbox}
+<% endfor %>
+<% endif %>
+
+<% for issue in issues_by_target.get(problem.get("id"), []) %>
+\begin{warningbox}
+{{ issue.get("message", "") | tex }}
+\end{warningbox}
+<% endfor %>
+<% endfor %>
+
+<% for sup in supplements_by_target.get(section.get("id"), []) %>
+\begin{supplement}
+{{ sup.get("content", "") | tex }}
+\end{supplement}
+<% endfor %>
+
+<% for issue in issues_by_target.get(section.get("id"), []) %>
+\begin{warningbox}
+{{ issue.get("message", "") | tex }}
+\end{warningbox}
+<% endfor %>
+
+<% endfor %>
+
+<% if unassigned_problems %>
+\section{其他例题}
+<% for problem in unassigned_problems %>
+\begin{problem}{ {{ (problem.get("title") or problem.get("id", "未命名题目")) | tex }} }
+<% if problem.get("statement") %>{{ problem.get("statement", {}).get("content", "") | tex }}<% endif %>
+\end{problem}
+<% for fig in figures_by_problem.get(problem.get("id"), []) %>
+\shot{ {{- fig.get("width", "0.92") -}} }{ {{- fig.get("publication_name", "") | tex -}} }{ {{- fig.get("caption", "视频关键画面") | tex -}} }
+<% endfor %>
+<% if problem.get("analysis") %>
+\begin{observation}
+{{ problem.get("analysis", {}).get("content", "") | tex }}
+\end{observation}
+<% endif %>
+<% if problem.get("teacher_solution") %>
+\begin{solution}
+{{ problem.get("teacher_solution", {}).get("content", "") | tex }}
+\end{solution}
+<% for issue in issues_by_target.get(problem.get("id", "") ~ ".teacher_solution", []) %>
+\begin{warningbox}
+{{ issue.get("message", "") | tex }}
+\end{warningbox}
+<% endfor %>
+<% endif %>
+<% for sup in supplements_by_target.get(problem.get("id"), []) %>
+<% if sup.get("type") == "derived_solution" %>
+\begin{derivedsolution}
+{{ sup.get("content", "") | tex }}
+\end{derivedsolution}
+<% else %>
+\begin{supplement}
+{{ sup.get("content", "") | tex }}
+\end{supplement}
+<% endif %>
+<% endfor %>
+<% if problem.get("teacher_answer") %>
+\answer{ {{ problem.get("teacher_answer", {}).get("content", "") | tex }} }
+<% for issue in issues_by_target.get(problem.get("id", "") ~ ".teacher_answer", []) %>
+\begin{warningbox}
+{{ issue.get("message", "") | tex }}
+<% if issue.get("review_value") %>\par 建议值：{{ issue.get("review_value") | tex }}<% endif %>
+\end{warningbox}
+<% endfor %>
+<% endif %>
+<% endfor %>
+<% endif %>
+
+<% if lecture.get("summary") %>
+\section{方法总结}
+\begin{itemize}
+<% for item in lecture.get("summary", []) %>
+  \item {{ (item.content if item is mapping and item.content is defined else item) | tex }}
+<% endfor %>
+\end{itemize}
+<% endif %>
+
+\end{document}

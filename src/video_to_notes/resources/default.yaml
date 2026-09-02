@@ -1,0 +1,206 @@
+project:
+  workspace_root: "workspace"
+  copy_source_video: false
+
+pipeline:
+  stop_on_failure: true
+
+logging:
+  level: "INFO"
+  console: true
+  file: true
+
+cache:
+  enabled: true
+  hash_algorithm: "sha256"
+
+codex:
+  model_routing:
+    reconstruction: "terra"
+    completion: "terra"
+    review:
+      factual: "luna-high"
+      math: "sol"
+      pedagogical: "terra"
+
+llm:
+  # Default: Codex performs semantic reconstruction/review from generated task files.
+  # Set mode to "api" only when you explicitly want autonomous API execution.
+  mode: "codex_handoff"
+
+tools:
+  ffmpeg: "auto"
+  ffprobe: "auto"
+
+visual:
+  coverage_interval: 45.0
+  extraction_width: 960
+  jpeg_quality: 3
+
+  scan:
+    enabled: true
+    interval: 2.0
+    width: 640
+    jpeg_quality: 6
+
+  scene:
+    enabled: true
+    threshold: 0.08
+    min_gap_seconds: 0.75
+
+  transition:
+    duplicate_change_ratio: 0.015
+    duplicate_phash_distance: 5
+    incremental_change_ratio: 0.24
+    incremental_phash_distance: 24
+    pixel_difference_threshold: 24
+
+  classification:
+    progressive_min_incremental_events: 2
+    dynamic_events_per_minute: 10.0
+    dynamic_min_mean_change_ratio: 0.30
+
+  evidence:
+    extraction_width: 1600
+    jpeg_quality: 2
+    stable_max_frames: 2
+    progressive_max_frames: 8
+    dynamic_max_frames: 10
+    mixed_max_frames: 6
+
+transcription:
+  audio:
+    sample_rate: 16000
+    channels: 1
+    codec: "pcm_s16le"
+
+  whisper:
+    model: "large-v3"
+    language: "zh"
+    device: "auto"
+    compute_type: "auto"
+    beam_size: 5
+    vad_filter: true
+    word_timestamps: false
+    condition_on_previous_text: true
+
+  output:
+    write_json: true
+    write_srt: true
+    write_txt: true
+
+evidence:
+  transcript_padding_before: 1.5
+  transcript_padding_after: 1.5
+  min_overlap_seconds: 0.05
+  include_orphan_transcripts: true
+  confidence:
+    visual_weight: 0.55
+    transcript_weight: 0.45
+
+reconstruction:
+  prompts_file: "package:prompts.yaml"
+  max_evidence_chars_per_chunk: 28000
+  infer_problem_figures: true
+  max_figures_per_problem: 2
+
+  llm:
+    provider: "openai_compatible"
+    base_url: "https://api.openai.com/v1"
+    api_key_env: "OPENAI_API_KEY"
+    model: ""
+    timeout_seconds: 180
+    temperature: 0.0
+
+completion:
+  prompts_file: "package:prompts.yaml"
+  max_items_per_call: 12
+  reject_unreferenced_targets: true
+
+  llm:
+    provider: "openai_compatible"
+    base_url: "https://api.openai.com/v1"
+    api_key_env: "OPENAI_API_KEY"
+    model: ""
+    timeout_seconds: 180
+    temperature: 0.0
+
+review:
+  prompts_file: "package:prompts.yaml"
+  reject_unreferenced_targets: true
+
+  factual:
+    enabled: true
+    trigger_statuses:
+      - probable
+      - uncertain
+      - conflict
+    always_review_problem_fields:
+      - statement
+      - teacher_solution
+      - teacher_answer
+    llm:
+      provider: "openai_compatible"
+      base_url: "https://api.openai.com/v1"
+      api_key_env: "OPENAI_API_KEY"
+      model: ""
+      timeout_seconds: 180
+      temperature: 0.0
+
+  math:
+    enabled: true
+    review_all_problems: true
+    llm:
+      provider: "openai_compatible"
+      base_url: "https://api.openai.com/v1"
+      api_key_env: "OPENAI_API_KEY"
+      model: ""
+      timeout_seconds: 180
+      temperature: 0.0
+
+  pedagogical:
+    enabled: true
+    whole_lecture: true
+    llm:
+      provider: "openai_compatible"
+      base_url: "https://api.openai.com/v1"
+      api_key_env: "OPENAI_API_KEY"
+      model: ""
+      timeout_seconds: 180
+      temperature: 0.0
+
+render:
+  template: "package:lecture.tex.j2"
+  engine: "xelatex"
+  runs: 2
+  timeout_seconds: 180
+  interaction: "nonstopmode"
+  halt_on_error: true
+  copy_publication_images: true
+  fail_on_missing_image: true
+  fail_on_missing_character: true
+
+audit:
+  fail_on_warning: false
+  require_rendered_stage: true
+  require_xelatex_runs: 2
+  block_open_possible_teacher_error: true
+  block_open_review_error: true
+
+stages:
+  visual:
+    enabled: true
+  transcription:
+    enabled: true
+  evidence:
+    enabled: true
+  reconstruction:
+    enabled: true
+  completion:
+    enabled: true
+  review:
+    enabled: true
+  render:
+    enabled: true
+  audit:
+    enabled: true

@@ -1,0 +1,12 @@
+workspace_name: 倍长中线2
+expect:
+  problems_min: 3
+  figures_min: 1
+  derived_solutions_min: 1
+  unverified_derived_solutions: 0
+  latex_errors: 0
+  missing_characters: 0
+  audit: PASS
+contains:
+  - 倍长中线
+  - CD=2CE

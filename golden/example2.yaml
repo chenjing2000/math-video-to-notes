@@ -1,0 +1,11 @@
+workspace_name: 倍长中线3
+expect:
+  problems_min: 1
+  figures_min: 1
+  derived_solutions_min: 0
+  unverified_derived_solutions: 0
+  latex_errors: 0
+  missing_characters: 0
+  audit: PASS
+contains:
+  - 倍长中线
