@@ -41,9 +41,10 @@ def run_render_stage(ctx: StageContext) -> None:
     if str(lecture.get("stage", "")) not in {
         "review_draft",
         "rendered",
+        "audited",
     }:
         raise StageError(
-            "render stage 只接受 review_draft/rendered。"
+            "render stage 只接受 review_draft/rendered/audited。"
         )
 
     template_path = resolve_resource_path(cfg.get("template", "package:lecture.tex.j2"), default_name="lecture.tex.j2")
@@ -127,6 +128,7 @@ def run_render_stage(ctx: StageContext) -> None:
     final_pdf = output_dir / "lecture.pdf"
     shutil.copy2(compile_result["pdf_path"], final_pdf)
 
+    lecture.pop("audit", None)
     lecture["stage"] = "rendered"
     atomic_write_json(lecture_path, lecture)
 

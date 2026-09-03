@@ -151,9 +151,15 @@
 <% endif %>
 
 <% if problem.get("publication_solution") %>
+<% if problem.get("publication_solution", {}).get("source_kind") in ["derived_solution", "supplement_solution"] %>
+\begin{derivedsolution}
+{{ problem.get("publication_solution", {}).get("content", "") | tex }}
+\end{derivedsolution}
+<% else %>
 \begin{solution}
 {{ problem.get("publication_solution", {}).get("content", "") | tex }}
 \end{solution}
+<% endif %>
 <% elif problem.get("teacher_solution") %>
 \begin{solution}
 {{ problem.get("teacher_solution", {}).get("content", "") | tex }}
@@ -214,9 +220,15 @@
 \end{observation}
 <% endif %>
 <% if problem.get("publication_solution") %>
+<% if problem.get("publication_solution", {}).get("source_kind") in ["derived_solution", "supplement_solution"] %>
+\begin{derivedsolution}
+{{ problem.get("publication_solution", {}).get("content", "") | tex }}
+\end{derivedsolution}
+<% else %>
 \begin{solution}
 {{ problem.get("publication_solution", {}).get("content", "") | tex }}
 \end{solution}
+<% endif %>
 <% elif problem.get("teacher_solution") %>
 \begin{solution}
 {{ problem.get("teacher_solution", {}).get("content", "") | tex }}

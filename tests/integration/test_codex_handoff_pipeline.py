@@ -219,3 +219,168 @@ def test_codex_tasks_status(tmp_path):
     assert result.returncode == 0
     assert "reconstruction" in result.stdout
     assert "no prepared task" in result.stdout
+
+
+def test_pedagogical_repair_escalates_three_rounds_then_continues_with_notes(tmp_path):
+    project_root = Path(__file__).resolve().parents[2]
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(project_root / "src")
+    video = tmp_path / "lesson.mp4"
+    video.write_bytes(b"fake-video")
+    config = tmp_path / "config.yaml"
+    config.write_text(yaml.safe_dump({
+        "project": {
+            "workspace_root": str(tmp_path / "workspace"),
+            "copy_source_video": False,
+            "project_root": str(project_root),
+        },
+        "llm": {"mode": "codex_handoff"},
+        "review": {
+            "factual": {"enabled": False},
+            "math": {"enabled": False},
+            "pedagogical": {
+                "enabled": True,
+                "whole_lecture": True,
+                "repair": {"enabled": True},
+            },
+        },
+    }, allow_unicode=True), encoding="utf-8")
+    assert _run(project_root, env, "--config", str(config), "init", str(video)).returncode == 0
+
+    ws = tmp_path / "workspace" / "lesson"
+    (ws / "lecture").mkdir(parents=True, exist_ok=True)
+    (ws / "evidence").mkdir(parents=True, exist_ok=True)
+    lecture = {
+        "schema_version": "1.0",
+        "stage": "completion_draft",
+        "metadata": {}, "overview": {},
+        "sections": [{"id": "sec_01", "title": "角度", "blocks": []}],
+        "problems": [{
+            "id": "P01", "section_id": "sec_01", "title": "例题",
+            "statement": {"content": "完整题目：已知两个角的关系，求 x。", "origin": "video", "evidence_ids": [], "status": "confirmed"},
+            "teacher_solution": {"content": "老师原解。", "origin": "video", "evidence_ids": [], "status": "confirmed"},
+            "derived_solution": {"content": "补充推导的完整链条。", "origin": "supplement", "evidence_ids": [], "status": "confirmed"},
+            "publication_solution": {"content": "当前讲义解答：由关系得到 x=46°。", "source_kind": "derived_solution", "review_status": "verified"},
+            "teacher_answer": {"content": "46°", "origin": "video", "evidence_ids": [], "status": "confirmed"},
+            "publication_answer": {"content": "46°", "review_status": "verified"},
+        }],
+        "supplements": [], "figures": [], "summary": [], "review": {"issues": []},
+    }
+    (ws / "lecture" / "lecture.json").write_text(json.dumps(lecture, ensure_ascii=False), encoding="utf-8")
+    (ws / "evidence" / "timeline.json").write_text(json.dumps({"timeline": []}), encoding="utf-8")
+
+    tasks = ws / "tasks" / "review"
+    responses = ws / "responses" / "review"
+    responses.mkdir(parents=True, exist_ok=True)
+
+    # Initial pedagogical review.
+    prep = _run(project_root, env, "--config", str(config), "review", "prepare", str(video))
+    assert prep.returncode == 0, prep.stderr
+    manifest = json.loads((tasks / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["phase"] == "pedagogical"
+    ped_req = json.loads((tasks / "pedagogical.request.json").read_text(encoding="utf-8"))
+    (responses / "pedagogical.json").write_text(json.dumps({
+        "request_id": ped_req["request_id"],
+        "issues": [{
+            "target_id": "P01.teacher_solution",
+            "severity": "warning",
+            "label": "clarity",
+            "message": "当前讲义推导还不够连续。",
+            "source_value": None,
+            "review_value": None,
+        }],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    expected_models = ["terra-xhigh", "sol-medium", "sol-high"]
+    for round_index, expected_model in enumerate(expected_models, start=1):
+        prep = _run(project_root, env, "--config", str(config), "review", "prepare", str(video))
+        assert prep.returncode == 0, prep.stderr
+        manifest = json.loads((tasks / "manifest.json").read_text(encoding="utf-8"))
+        assert manifest["phase"] == f"pedagogical_repair_{round_index}"
+        name = f"ped_repair_r{round_index}_P01.teacher_solution"
+        req = json.loads((tasks / f"{name}.request.json").read_text(encoding="utf-8"))
+        assert req["required_model"] == expected_model
+        # Every escalation must reread the full problem and the current publication solution.
+        assert "完整题目：已知两个角的关系，求 x。" in req["user"]
+        assert "当前讲义解答：由关系得到 x=46°。" in req["user"]
+        assert "老师原解。" in req["user"]
+        assert "补充推导的完整链条。" in req["user"]
+        (responses / f"{name}.json").write_text(json.dumps({
+            "request_id": req["request_id"],
+            "repairs": [{
+                "issue_id": "pg_001",
+                "target_id": "P01.teacher_solution",
+                "status": "unresolved",
+                "action": "keep",
+                "content": "",
+            }],
+        }, ensure_ascii=False), encoding="utf-8")
+
+    # Third unresolved response is terminal for repair, but not for the pipeline.
+    prep = _run(project_root, env, "--config", str(config), "review", "prepare", str(video))
+    assert prep.returncode == 0, prep.stderr
+    manifest = json.loads((tasks / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["phase"] == "ready"
+    assert manifest["pedagogical_repair_models"] == expected_models
+
+    applied = _run(project_root, env, "--config", str(config), "review", "apply", str(video))
+    assert applied.returncode == 0, applied.stderr
+    reviewed = json.loads((ws / "lecture" / "lecture.json").read_text(encoding="utf-8"))
+    assert reviewed["stage"] == "review_draft"
+    assert reviewed["problems"][0]["teacher_solution"]["content"] == "老师原解。"
+    assert reviewed["problems"][0]["publication_solution"]["content"] == "当前讲义解答：由关系得到 x=46°。"
+    assert reviewed["review"]["pedagogical_repair"]["unresolved"] == 1
+    assert reviewed["review"]["pedagogical_repair"]["complete_with_unresolved"] is True
+    report = json.loads((ws / "reports" / "review_report.json").read_text(encoding="utf-8"))
+    assert report["quality"]["complete"] is True
+    assert report["quality"]["has_notes"] is True
+    assert report["quality"]["notes"][0]["type"] == "pedagogical_unresolved"
+
+
+def test_pedagogical_repair_stops_after_first_resolved_round(tmp_path):
+    project_root = Path(__file__).resolve().parents[2]
+    env = os.environ.copy(); env["PYTHONPATH"] = str(project_root / "src")
+    video = tmp_path / "lesson.mp4"; video.write_bytes(b"fake")
+    config = tmp_path / "config.yaml"
+    config.write_text(yaml.safe_dump({
+        "project": {"workspace_root": str(tmp_path / "workspace"), "project_root": str(project_root)},
+        "llm": {"mode": "codex_handoff"},
+        "review": {
+            "factual": {"enabled": False}, "math": {"enabled": False},
+            "pedagogical": {"enabled": True, "whole_lecture": True, "repair": {"enabled": True}},
+        },
+    }, allow_unicode=True), encoding="utf-8")
+    assert _run(project_root, env, "--config", str(config), "init", str(video)).returncode == 0
+    ws = tmp_path / "workspace" / "lesson"
+    (ws / "lecture").mkdir(parents=True, exist_ok=True); (ws / "evidence").mkdir(parents=True, exist_ok=True)
+    lecture = {
+        "schema_version": "1.0", "stage": "completion_draft", "metadata": {}, "overview": {},
+        "sections": [{"id": "sec_01", "title": "方法", "blocks": []}],
+        "problems": [], "supplements": [], "figures": [], "summary": [], "review": {"issues": []},
+    }
+    (ws / "lecture" / "lecture.json").write_text(json.dumps(lecture, ensure_ascii=False), encoding="utf-8")
+    (ws / "evidence" / "timeline.json").write_text('{"timeline": []}', encoding="utf-8")
+    tasks = ws / "tasks" / "review"; responses = ws / "responses" / "review"; responses.mkdir(parents=True, exist_ok=True)
+
+    assert _run(project_root, env, "--config", str(config), "review", "prepare", str(video)).returncode == 0
+    ped_req = json.loads((tasks / "pedagogical.request.json").read_text(encoding="utf-8"))
+    (responses / "pedagogical.json").write_text(json.dumps({
+        "request_id": ped_req["request_id"],
+        "issues": [{"target_id": "sec_01", "severity": "info", "label": "clarity", "message": "增加方法小结。", "source_value": None, "review_value": None}],
+    }, ensure_ascii=False), encoding="utf-8")
+    assert _run(project_root, env, "--config", str(config), "review", "prepare", str(video)).returncode == 0
+    req = json.loads((tasks / "ped_repair_r1_sec_01.request.json").read_text(encoding="utf-8"))
+    assert req["required_model"] == "terra-xhigh"
+    (responses / "ped_repair_r1_sec_01.json").write_text(json.dumps({
+        "request_id": req["request_id"],
+        "repairs": [{"issue_id": "pg_001", "target_id": "sec_01", "status": "resolved", "action": "append_summary", "content": "方法小结：先识别条件，再组织推导。"}],
+    }, ensure_ascii=False), encoding="utf-8")
+    assert _run(project_root, env, "--config", str(config), "review", "prepare", str(video)).returncode == 0
+    manifest = json.loads((tasks / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["phase"] == "ready"
+    assert not (tasks / "ped_repair_r2_sec_01.request.json").exists()
+    assert _run(project_root, env, "--config", str(config), "review", "apply", str(video)).returncode == 0
+    reviewed = json.loads((ws / "lecture" / "lecture.json").read_text(encoding="utf-8"))
+    assert reviewed["summary"][0]["content"] == "方法小结：先识别条件，再组织推导。"
+    assert reviewed["review"]["pedagogical_repair"]["resolved"] == 1
+    assert reviewed["review"]["pedagogical_repair"]["unresolved"] == 0

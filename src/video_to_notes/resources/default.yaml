@@ -171,6 +171,12 @@ review:
   pedagogical:
     enabled: true
     whole_lecture: true
+    repair:
+      enabled: true
+      api_model_aliases:
+        terra-xhigh: ""
+        sol-medium: ""
+        sol-high: ""
     llm:
       provider: "openai_compatible"
       base_url: "https://api.openai.com/v1"

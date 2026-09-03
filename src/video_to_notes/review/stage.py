@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import logging
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from ..errors import ModelResponseError
 from ..reconstruction.provider import build_provider
 from ..stages import StageContext
 from .common import (
@@ -26,8 +28,39 @@ from .math_core import (
     unresolved_target_ids,
     validate_math_revision_response,
 )
+from .pedagogical_core import (
+    PEDAGOGICAL_REPAIR_ROUTE,
+    apply_repair_round,
+    assign_pedagogical_issue_ids,
+    build_repair_context,
+    group_issues_by_target,
+    render_repair_user,
+    repair_summary,
+    unresolved_pedagogical_issues,
+    validate_repair_response,
+)
 from .validation import validate_raw_issues
 
+
+
+
+def _resolve_repair_api_llm_config(
+    pedagogical_cfg: dict[str, Any], logical_model: str
+) -> dict[str, Any]:
+    """Resolve API transport settings without owning the fixed business route."""
+    repair_cfg = pedagogical_cfg.get("repair", {})
+    if not isinstance(repair_cfg, dict):
+        repair_cfg = {}
+    base = repair_cfg.get("llm")
+    if not isinstance(base, dict):
+        base = pedagogical_cfg.get("llm", {})
+    resolved = deepcopy(base) if isinstance(base, dict) else {}
+    if str(resolved.get("provider", "openai_compatible")) == "file":
+        return resolved
+    aliases = repair_cfg.get("api_model_aliases", {})
+    alias = aliases.get(logical_model) if isinstance(aliases, dict) else None
+    resolved["model"] = str(alias or logical_model)
+    return resolved
 
 def _resolve_project_root(ctx: StageContext) -> Path:
     configured = ctx.config.get("project", {}).get("project_root")
@@ -161,19 +194,96 @@ def run_review_stage(ctx: StageContext) -> None:
 
     # 3) Pedagogical review sees the publication-oriented math view.
     pedagogical_cfg = cfg.get("pedagogical", {})
+    pedagogical_issues: list[dict[str, Any]] = []
+    pedagogical_repair_report = repair_summary([], [])
     if bool(pedagogical_cfg.get("enabled", True)) and bool(pedagogical_cfg.get("whole_lecture", True)):
         provider = build_provider(pedagogical_cfg["llm"], project_root=project_root)
         prompt = review_prompts.get("pedagogical", {})
         user = render_pedagogical_user(prompt, lecture)
         raw = provider.generate_json(system=str(prompt["system"]), user=user)
-        issues = validate_raw_issues(
+        pedagogical_issues = assign_pedagogical_issue_ids(validate_raw_issues(
             raw.get("issues"),
             review_type="pedagogical",
             valid_target_ids=valid_target_ids,
             reject_unreferenced_targets=reject_unknown,
+        ))
+        run_report["pedagogical"] = {"triggered": True, "issues": len(pedagogical_issues)}
+
+        repair_cfg = pedagogical_cfg.get("repair", {})
+        repair_enabled = bool(repair_cfg.get("enabled", True)) if isinstance(repair_cfg, dict) else True
+        repair_round_reports: list[dict[str, Any]] = []
+        if pedagogical_issues and repair_enabled:
+            repair_prompt = review_prompts.get("pedagogical_repair", {})
+            file_provider = None
+            explicit_repair_llm = repair_cfg.get("llm") if isinstance(repair_cfg, dict) else None
+            base_repair_llm = explicit_repair_llm if isinstance(explicit_repair_llm, dict) else None
+            pedagogical_llm = pedagogical_cfg.get("llm", {})
+            pedagogical_provider = (
+                str(pedagogical_llm.get("provider", ""))
+                if isinstance(pedagogical_llm, dict)
+                else ""
+            )
+            # FileProvider is mainly a deterministic test/offline transport.  A legacy
+            # config normally contains only one pedagogical response file, so do not
+            # accidentally consume that same response as a repair payload.  File-mode
+            # repairs therefore require an explicit pedagogical.repair.llm block.
+            if isinstance(base_repair_llm, dict) and str(base_repair_llm.get("provider", "")) == "file":
+                file_provider = build_provider(base_repair_llm, project_root=project_root)
+            can_run_repair = not (pedagogical_provider == "file" and base_repair_llm is None)
+
+            for round_index, model in enumerate(PEDAGOGICAL_REPAIR_ROUTE, start=1):
+                if not can_run_repair:
+                    break
+                pending = unresolved_pedagogical_issues(pedagogical_issues)
+                if not pending:
+                    break
+                groups = group_issues_by_target(pending)
+                round_repairs: list[dict[str, Any]] = []
+                if file_provider is not None:
+                    repair_provider = file_provider
+                else:
+                    repair_provider = build_provider(
+                        _resolve_repair_api_llm_config(pedagogical_cfg, model),
+                        project_root=project_root,
+                    )
+                invalid_issue_ids: list[str] = []
+                for target_id, target_issues in groups.items():
+                    repair_user = render_repair_user(
+                        repair_prompt,
+                        round_index=round_index,
+                        model=model,
+                        target_context=build_repair_context(lecture, target_id),
+                        issues=target_issues,
+                    )
+                    try:
+                        repair_raw = repair_provider.generate_json(
+                            system=str(repair_prompt["system"]), user=repair_user
+                        )
+                        round_repairs.extend(validate_repair_response(
+                            repair_raw, expected_issues=target_issues
+                        ))
+                    except ModelResponseError:
+                        # A response existed but was unusable.  It consumes this business
+                        # round for the affected issues; transport failures still propagate.
+                        invalid_issue_ids.extend(
+                            str(issue.get("pedagogical_issue_id", ""))
+                            for issue in target_issues
+                            if str(issue.get("pedagogical_issue_id", ""))
+                        )
+                repair_round_reports.append(apply_repair_round(
+                    lecture,
+                    pedagogical_issues,
+                    round_repairs,
+                    round_index=round_index,
+                    model=model,
+                    invalid_issue_ids=invalid_issue_ids,
+                ))
+
+        pedagogical_repair_report = repair_summary(
+            pedagogical_issues, repair_round_reports
         )
-        all_issues.extend(issues)
-        run_report["pedagogical"] = {"triggered": True, "issues": len(issues)}
+        all_issues.extend(pedagogical_issues)
+        run_report["pedagogical"]["repair"] = pedagogical_repair_report
     else:
         run_report["pedagogical"] = {"triggered": False, "issues": 0}
 
@@ -185,6 +295,7 @@ def run_review_stage(ctx: StageContext) -> None:
         math_summary=math_summary,
         mode="api",
         reviewers=run_report,
+        pedagogical_repair=pedagogical_repair_report,
     )
     logger.info(
         "[review] issues=%d math_problems=%d high_escalations=%d unresolved=%d",

@@ -109,6 +109,7 @@ def record_handoff_prepare(
             "review_math": "math_review",
             "review_math_high": "math_review",
             "review_pedagogical": "pedagogical_review",
+            "review_pedagogical_repair": "pedagogical_review",
         }.get(task_type, stage)
         threshold = int(warning_thresholds.get(threshold_key, 0) or 0)
         entry["requests"][output_name] = {

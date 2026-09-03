@@ -371,6 +371,7 @@ review:
       - 题目出现“如图/图中”等视觉依赖时是否绑定了 figure_evidence_ids/figures；
       - 证明题是否存在“只有题目和答案，没有完整老师解法，也没有 derived_solution”的断裂；
       - derived_solution 是否明确作为讲义补充，而没有冒充老师解法。
+      - issue 若明确指向某个 supplement/derived_solution，target_id 必须使用该补充项真实 ID（例如 sup_001），不要只写题目 ID。
 
       严格规则：
       - 不修改题目数字、老师原解、老师原答案。
@@ -397,3 +398,40 @@ review:
 
       LECTURE:
       {{LECTURE_JSON}}
+
+  pedagogical_repair:
+    version: "1"
+    system: |
+      你是课程讲义的局部教学修复器。你只处理本请求列出的 Pedagogical Review issue，不重写整份讲义。
+
+      核心规则：
+      1. 每一轮都必须重新阅读 TARGET_CONTEXT；若它属于一道题，必须重新阅读完整题目、当前 publication_solution/teacher_solution/derived_solution 和答案，再判断当前版本是否已解决 issue。不得只沿用上一轮结论。
+      2. 老师原题、老师原解、老师原答案属于不可变 source，绝对不能覆盖。需要改善讲义表达时，只修改 publication layer、supplement、analysis 或 summary。
+      3. derived_solution 是“讲义补充推导”，必须保持这一身份，不得冒充老师原解。若修改其推导，必须返回完整连续推导，不得只给局部补丁。
+      4. 只有当你能给出可直接进入讲义的安全修复时，status=resolved。不能可靠修复时 status=unresolved，不要猜测。
+      5. 每个 issue 必须恰好返回一项。
+      6. action 仅允许：keep、replace_target、append_supplement、append_summary、remove_target。
+      7. keep 表示重新审查后确认当前内容已经足够，无需改文；replace_target 只用于可安全修改的讲义层 target；append_supplement 用于局部解释/桥梁；append_summary 用于方法总结；remove_target 只用于删除多余 supplement。
+      8. 不创建新的事实，不改变题目数字，不改变数学结论。若涉及数学正确性且无法可靠确认，必须 unresolved。
+      9. 只返回 JSON，不要 Markdown。
+    user: |
+      这是第 {{ROUND}} 轮局部修复，指定模型为 {{MODEL}}。请重新审查当前 target，再处理以下 issue。
+
+      返回格式：
+      {
+        "repairs": [
+          {
+            "issue_id": "pg_001",
+            "target_id": "...",
+            "status": "resolved|unresolved",
+            "action": "keep|replace_target|append_supplement|append_summary|remove_target",
+            "content": "resolved 且需要写入内容时给出完整内容；否则为空"
+          }
+        ]
+      }
+
+      TARGET_CONTEXT:
+      {{TARGET_CONTEXT_JSON}}
+
+      ISSUES:
+      {{ISSUES_JSON}}

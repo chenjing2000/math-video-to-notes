@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 from typing import Any, Callable
 
-from ..errors import StageError
+from ..errors import ModelResponseError, StageError
 from ..performance import record_handoff_apply, record_handoff_prepare
 from ..receipt import request_id
 from ..review.common import (
@@ -27,6 +27,17 @@ from ..review.math_core import (
     select_math_image_paths,
     unresolved_target_ids,
     validate_math_revision_response,
+)
+from ..review.pedagogical_core import (
+    PEDAGOGICAL_REPAIR_ROUTE,
+    apply_repair_round,
+    assign_pedagogical_issue_ids,
+    build_repair_context,
+    group_issues_by_target,
+    render_repair_user,
+    repair_summary,
+    unresolved_pedagogical_issues,
+    validate_repair_response,
 )
 from ..review.routing import collect_all_target_ids
 from ..review.validation import validate_raw_issues
@@ -85,6 +96,32 @@ def _read_valid_response(
         return validator(raw)
     except Exception:
         return None
+
+
+def _read_repair_response(
+    path: Path,
+    request_id_value: str,
+    expected_issues: list[dict[str, Any]],
+) -> tuple[str, list[dict[str, Any]]]:
+    """Return (valid|invalid|missing, repairs) for a Codex repair response.
+
+    A stale response is missing for the current request.  A current response file that
+    exists but is malformed/schema-invalid consumes this business round and is invalid.
+    """
+    if not path.exists() or not path.is_file():
+        return "missing", []
+    try:
+        raw = read_json(path)
+    except Exception:
+        return "invalid", []
+    if not isinstance(raw, dict):
+        return "invalid", []
+    if str(raw.get("request_id", "")) != request_id_value:
+        return "missing", []
+    try:
+        return "valid", validate_repair_response(raw, expected_issues=expected_issues)
+    except ModelResponseError:
+        return "invalid", []
 
 
 def _issue_validator(
@@ -209,6 +246,52 @@ def _pedagogical_request(
         "user": user,
         "packet_provenance": {"source_ids": sorted(valid_target_ids), "frame_ids": []},
         "output_file": "responses/review/pedagogical.json",
+    }
+
+
+def _pedagogical_repair_request(
+    *,
+    workspace_root: Path,
+    config: dict[str, Any],
+    prompt: dict[str, Any],
+    lecture: dict[str, Any],
+    target_id: str,
+    issues: list[dict[str, Any]],
+    round_index: int,
+    model: str,
+) -> dict[str, Any]:
+    context = build_repair_context(lecture, target_id)
+    user = render_repair_user(
+        prompt,
+        round_index=round_index,
+        model=model,
+        target_context=context,
+        issues=issues,
+    )
+    rid = request_id(workspace_root, config, "review", extra={
+        "task_type": "review_pedagogical_repair",
+        "round": round_index,
+        "target_id": target_id,
+        "model": model,
+        "system": str(prompt["system"]),
+        "user_hash": stable_json_hash(user),
+    })
+    return {
+        "schema_version": "1.4",
+        "request_id": rid,
+        "task_type": "review_pedagogical_repair",
+        "repair_round": round_index,
+        "target_id": target_id,
+        "required_model": model,
+        "system": str(prompt["system"]),
+        "user": user,
+        "packet_provenance": {
+            "source_ids": [target_id],
+            "pedagogical_issue_ids": [
+                str(issue.get("pedagogical_issue_id", "")) for issue in issues
+            ],
+            "frame_ids": [],
+        },
     }
 
 
@@ -354,6 +437,7 @@ def prepare_review(*, workspace_root: Path, config: dict[str, Any]) -> dict[str,
 
     # Phase 4: pedagogical review sees the publication-oriented math result.
     pedagogical_cfg = cfg.get("pedagogical", {})
+    pedagogical_issues: list[dict[str, Any]] = []
     if phase not in {"factual", "math_medium", "math_high"} and bool(pedagogical_cfg.get("enabled", True)) and bool(pedagogical_cfg.get("whole_lecture", True)):
         req = _pedagogical_request(
             workspace_root=workspace_root,
@@ -365,17 +449,88 @@ def prepare_review(*, workspace_root: Path, config: dict[str, Any]) -> dict[str,
         requests["pedagogical.json"] = req
         validator = _issue_validator(review_type="pedagogical", valid_target_ids=valid_target_ids, reject_unknown=reject_unknown)
         validators["pedagogical.json"] = validator
-        if _read_valid_response(responses / "pedagogical.json", str(req["request_id"]), validator) is None:
+        normalized = _read_valid_response(
+            responses / "pedagogical.json", str(req["request_id"]), validator
+        )
+        if normalized is None:
             phase = "pedagogical"
+        else:
+            pedagogical_issues = assign_pedagogical_issue_ids(normalized)
+
+    # Phase 5: close pedagogical issues with at most three local repair rounds.
+    # The sequence is intentionally fixed and small: Terra XHigh -> Sol Medium -> Sol High.
+    repair_output_map: dict[str, dict[str, str]] = {}
+    invalid_repair_outputs: set[str] = set()
+    repair_cfg = pedagogical_cfg.get("repair", {}) if isinstance(pedagogical_cfg, dict) else {}
+    repair_enabled = bool(repair_cfg.get("enabled", True)) if isinstance(repair_cfg, dict) else True
+    if phase not in {"factual", "math_medium", "math_high", "pedagogical"} and pedagogical_issues and repair_enabled:
+        pending = unresolved_pedagogical_issues(pedagogical_issues)
+        repair_prompt = prompts.get("pedagogical_repair", {})
+        for round_index, model in enumerate(PEDAGOGICAL_REPAIR_ROUTE, start=1):
+            if not pending:
+                break
+            round_snapshot = deepcopy(projected_lecture)
+            groups = group_issues_by_target(pending)
+            round_results: list[dict[str, Any]] = []
+            invalid_issue_ids: list[str] = []
+            round_missing = False
+            for target_id, target_issues in groups.items():
+                req = _pedagogical_repair_request(
+                    workspace_root=workspace_root,
+                    config=config,
+                    prompt=repair_prompt,
+                    lecture=round_snapshot,
+                    target_id=target_id,
+                    issues=target_issues,
+                    round_index=round_index,
+                    model=model,
+                )
+                name = f"ped_repair_r{round_index}_{_safe_id(target_id)}.json"
+                req["output_file"] = f"responses/review/{name}"
+                requests[name] = req
+                validator = lambda data, expected=deepcopy(target_issues): validate_repair_response(
+                    data, expected_issues=expected
+                )
+                validators[name] = validator
+                response_state, normalized = _read_repair_response(
+                    responses / name, str(req["request_id"]), target_issues
+                )
+                repair_output_map.setdefault(str(round_index), {})[target_id] = name
+                if response_state == "missing":
+                    round_missing = True
+                elif response_state == "invalid":
+                    invalid_repair_outputs.add(name)
+                    invalid_issue_ids.extend(
+                        str(issue.get("pedagogical_issue_id", ""))
+                        for issue in target_issues
+                        if str(issue.get("pedagogical_issue_id", ""))
+                    )
+                else:
+                    round_results.extend(normalized)
+            if round_missing:
+                phase = f"pedagogical_repair_{round_index}"
+                break
+            apply_repair_round(
+                projected_lecture,
+                pedagogical_issues,
+                round_results,
+                round_index=round_index,
+                model=model,
+                invalid_issue_ids=invalid_issue_ids,
+            )
+            pending = unresolved_pedagogical_issues(pedagogical_issues)
 
     tasks = task_root(workspace_root, "review")
-    reusable = {name: (str(req["request_id"]), validators.get(name)) for name, req in requests.items()}
+    reusable = {
+        name: (str(req["request_id"]), None if name in invalid_repair_outputs else validators.get(name))
+        for name, req in requests.items()
+    }
     reused = prepare_task_directories(tasks, responses, reusable=reusable)
     for output_name, request in requests.items():
         write_task_file(tasks / output_name.replace(".json", ".request.json"), request)
 
     manifest = {
-        "schema_version": "1.3",
+        "schema_version": "1.5",
         "input_id": input_id,
         "request_id": input_id,
         "stage": "review",
@@ -394,6 +549,10 @@ def prepare_review(*, workspace_root: Path, config: dict[str, Any]) -> dict[str,
             for output, req in requests.items()
         },
         "math_outputs": math_output_map,
+        "pedagogical_repair_outputs": repair_output_map,
+        "pedagogical_repair_invalid_outputs": sorted(invalid_repair_outputs),
+        "pedagogical_repair_models": list(PEDAGOGICAL_REPAIR_ROUTE),
+        "pedagogical_issue_count": len(pedagogical_issues),
         "reused_outputs": sorted(reused),
         "valid_target_ids": sorted(valid_target_ids),
     }
@@ -407,7 +566,7 @@ def prepare_review(*, workspace_root: Path, config: dict[str, Any]) -> dict[str,
         warning_thresholds=config.get("performance", {}).get("packet_warning_chars", {}),
     )
 
-    write_instructions(tasks / "INSTRUCTIONS.md", f"""# Codex Handoff — Review v1.2.4
+    write_instructions(tasks / "INSTRUCTIONS.md", f"""# Codex Handoff — Review v1.2.6
 
 当前阶段：`{phase}`。处理本目录中所有尚未有合法 response 的 `*.request.json`；已有 request_id 完全一致的响应必须复用。
 
@@ -416,6 +575,12 @@ def prepare_review(*, workspace_root: Path, config: dict[str, Any]) -> dict[str,
 2. 每道有解题过程的题 → `sol-medium`
 3. 仅 Medium unresolved 的 target → `sol-high`
 4. pedagogical → `terra`
+5. 若 pedagogical 有 issue：局部修复最多 3 轮 → `terra-xhigh` → `sol-medium` → `sol-high`
+
+教学修复规则：
+- 每轮必须重新阅读完整题目与当前解答，不得只沿用上一轮结论。
+- 只修改讲义层，不覆盖老师原题/原解/原答案。
+- 第三轮仍 unresolved 也必须结束修复并继续 Render/PDF；最终质量为 PASS_WITH_NOTES。
 
 数学规则：
 - 只要有解题过程就必须经过 Sol Medium。
@@ -459,7 +624,12 @@ def apply_review(*, workspace_root: Path, config: dict[str, Any]) -> dict[str, A
             reject_unreferenced_targets=reject_unknown,
         ))
 
-    math_targets = collect_math_review_targets(lecture)
+    math_cfg = cfg.get("math", {})
+    math_targets = (
+        collect_math_review_targets(lecture)
+        if bool(math_cfg.get("enabled", True))
+        else []
+    )
     medium_results: dict[str, dict[str, Any]] = {}
     high_results: dict[str, dict[str, Any]] = {}
     math_outputs = manifest.get("math_outputs", {}) if isinstance(manifest.get("math_outputs"), dict) else {}
@@ -491,15 +661,77 @@ def apply_review(*, workspace_root: Path, config: dict[str, Any]) -> dict[str, A
             high_results=high_results,
         )
 
+    pedagogical_issues: list[dict[str, Any]] = []
+    pedagogical_repair_report = repair_summary([], [])
     if "pedagogical.json" in manifest.get("required_outputs", []):
         raw = load_response(responses / "pedagogical.json", "pedagogical review")
         require_request_id(raw, manifest_request_id(manifest, "pedagogical.json"), "pedagogical review")
-        all_issues.extend(validate_raw_issues(
+        pedagogical_issues = assign_pedagogical_issue_ids(validate_raw_issues(
             raw.get("issues"),
             review_type="pedagogical",
             valid_target_ids=valid,
             reject_unreferenced_targets=reject_unknown,
         ))
+
+        repair_outputs = manifest.get("pedagogical_repair_outputs", {})
+        if not isinstance(repair_outputs, dict):
+            repair_outputs = {}
+        repair_round_reports: list[dict[str, Any]] = []
+        repair_cfg = cfg.get("pedagogical", {}).get("repair", {})
+        repair_enabled = bool(repair_cfg.get("enabled", True)) if isinstance(repair_cfg, dict) else True
+
+        invalid_outputs = {
+            str(name) for name in manifest.get("pedagogical_repair_invalid_outputs", [])
+        }
+        if repair_enabled:
+            for round_index, model in enumerate(PEDAGOGICAL_REPAIR_ROUTE, start=1):
+                pending = unresolved_pedagogical_issues(pedagogical_issues)
+                if not pending:
+                    break
+                round_map = repair_outputs.get(str(round_index), {})
+                if not isinstance(round_map, dict):
+                    round_map = {}
+                groups = group_issues_by_target(pending)
+                round_repairs: list[dict[str, Any]] = []
+                invalid_issue_ids: list[str] = []
+                for target_id, target_issues in groups.items():
+                    name = str(round_map.get(target_id, ""))
+                    if not name:
+                        raise StageError(
+                            f"review manifest 缺少 pedagogical repair round {round_index} target={target_id} 输出。"
+                        )
+                    if name in invalid_outputs:
+                        invalid_issue_ids.extend(
+                            str(issue.get("pedagogical_issue_id", ""))
+                            for issue in target_issues
+                            if str(issue.get("pedagogical_issue_id", ""))
+                        )
+                        continue
+                    repair_raw = load_response(
+                        responses / name,
+                        f"pedagogical repair round {round_index} {target_id}",
+                    )
+                    require_request_id(
+                        repair_raw,
+                        manifest_request_id(manifest, name),
+                        f"pedagogical repair round {round_index} {target_id}",
+                    )
+                    round_repairs.extend(validate_repair_response(
+                        repair_raw, expected_issues=target_issues
+                    ))
+                repair_round_reports.append(apply_repair_round(
+                    lecture,
+                    pedagogical_issues,
+                    round_repairs,
+                    round_index=round_index,
+                    model=model,
+                    invalid_issue_ids=invalid_issue_ids,
+                ))
+
+        pedagogical_repair_report = repair_summary(
+            pedagogical_issues, repair_round_reports
+        )
+        all_issues.extend(pedagogical_issues)
 
     report = finalize_review(
         workspace_root=workspace_root,
@@ -508,6 +740,7 @@ def apply_review(*, workspace_root: Path, config: dict[str, Any]) -> dict[str, A
         raw_issues=all_issues,
         math_summary=math_summary,
         mode="codex_handoff",
+        pedagogical_repair=pedagogical_repair_report,
     )
     record_handoff_apply(workspace_root, "review", responses)
     return report

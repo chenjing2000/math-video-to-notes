@@ -31,6 +31,7 @@ visual
 → factual review / Luna High
 → math review / Sol Medium（未解决项 → Sol High）
 → pedagogical review / Terra
+→ pedagogical local repair（最多 3 轮：Terra XHigh → Sol Medium → Sol High）
 → render
 → audit
 → lecture.tex / lecture.pdf
@@ -64,6 +65,9 @@ review factual       -> luna-high
 review math          -> sol-medium
 review unresolved     -> sol-high
 review pedagogical   -> terra
+pedagogical repair 1 -> terra-xhigh
+pedagogical repair 2 -> sol-medium
+pedagogical repair 3 -> sol-high
 ```
 
 Luna 不允许低于 Luna High。
@@ -102,7 +106,7 @@ uv pip install -e .
 
 - Luna High：事实忠实性；
 - Sol Medium：所有已有解题过程逐项验算；发现错误时直接返回修正后的最终解法/答案；
-- Terra：结构、图文完整性和教学可读性。
+- Terra：结构、图文完整性和教学可读性；若发现 issue，进入固定三级局部修复器：Terra XHigh → Sol Medium → Sol High。每轮重新读取完整题目与当前解答，只修讲义层；第三轮仍未解决也继续 Render/PDF，并在最终 Audit 中记为 PASS_WITH_NOTES。
 
 ### Render / Audit
 
@@ -111,7 +115,7 @@ Jinja2 生成标准 LaTeX，XeLaTeX 编译两次。Audit 会阻止以下内容�
 - `如图`/几何题却没有实际插图；
 - 必须解答的题只有答案，没有完整老师解法或 verified derived solution；
 - derived solution 未经过数学审校；
-- unresolved review / LaTeX blocking errors。
+- factual/math blocking review / LaTeX blocking errors。教学修复三级后仍 unresolved 属于 non-blocking note，允许生成 PDF 并得到 PASS_WITH_NOTES。
 
 ## 诊断命令
 
@@ -165,6 +169,15 @@ video-to-notes performance "VIDEO"
 video-to-notes performance "VIDEO" --reset
 ```
 
+## v1.2.6 Review Logic Unification
+
+- API 与 Codex 均保留，并共享同一套 Pedagogical Repair 业务核心；
+- 固定三级路径仍为 `Terra XHigh -> Sol Medium -> Sol High`，没有第四轮；
+- context、response validation、原子 apply、teacher source protection、remaining issues、round status 与 repair history 共用；
+- transport failure 不消耗业务轮；当前模型响应若 schema 非法，则该轮记为 `invalid` 并可升级下一逻辑模型；
+- 第三轮仍未解决时继续 Render/PDF/Audit，最终可为 `PASS_WITH_NOTES`；
+- 本版不引入 Planner/StateMachine/ReviewEngine，也不为了行数拆分现有大文件。
+
 ## 测试
 
 普通测试：
@@ -175,7 +188,7 @@ pytest -q tests --ignore=tests/integration
 
 包含 XeLaTeX 的集成测试建议逐文件运行，避免多个外部子进程堆在同一个 pytest 进程中。
 
-当前版本：`1.2.1`。
+当前版本：`1.2.6`。
 
 ### 数学终审
 

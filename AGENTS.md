@@ -102,6 +102,9 @@ review factual       -> luna-high
 review math          -> sol-medium
 review math escalation -> sol-high
 review pedagogical   -> terra
+review pedagogical repair round 1 -> terra-xhigh
+review pedagogical repair round 2 -> sol-medium
+review pedagogical repair round 3 -> sol-high
 ```
 
 Luna must never be used below **Luna High**. Do not silently downgrade a request. If the current agent environment supports model-specific subagents/delegation, use the requested model. If it cannot honor a required model, do not pretend that it did; surface the limitation.
@@ -137,6 +140,18 @@ Math review is sequential and mandatory for every problem that contains any solu
 8. Geometry math requests include real `image_paths`; inspect them.
 9. Review always starts from immutable teacher/supplement source fields, never from a previous reviewed/publication result.
 10. The final PDF shows one publication solution, not reviewer comments or duplicate teacher/supplement/review copies.
+
+## Pedagogical local repair rule (v1.2.6)
+
+Pedagogical review does not trigger a whole-lecture rewrite. If Terra reports issues, repair only the affected targets with a fixed maximum of three rounds:
+
+1. round 1 -> `terra-xhigh`;
+2. unresolved issues only -> `sol-medium`;
+3. still-unresolved issues only -> `sol-high`.
+
+Repair business policy is shared by API and Codex. A transport failure is not a business round. A current response that exists but is schema-invalid consumes that logical round as `invalid`. Apply repairs atomically on a candidate publication and commit only after source invariants pass; never create a fourth repair round.
+
+Every round must reread the full current target context. For a problem target, this includes the complete problem statement, current publication solution, immutable teacher solution, derived solution when present, and answer. Never overwrite teacher source fields. A `derived_solution` remains supplemental content and must render as `讲义补充推导`, not as the teacher's `解法`. If round 3 is still unresolved, stop repairing and continue Render/PDF; record the final result as a non-blocking note so Audit can return `PASS_WITH_NOTES`. Do not add a planner, issue dependency graph, retry scheduler, voting reviewer system, or separate repair state machine.
 
 ## Reconstruction — visual binding is required
 

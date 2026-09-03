@@ -535,3 +535,13 @@ Review order is now factual -> per-problem Sol Medium -> unresolved-target Sol H
 ## v1.2.4 Code Cleanup
 
 v1.2.4 is behavior-preserving cleanup. It removes the retired audit engine and compatibility shim, makes `resources/default.yaml` the single source of default configuration, shares a thin set of Review data/finalization helpers between Codex and API transports, and records raw performance metrics without regenerating reports on every event. Model routing, review behavior, lecture/PDF publication rules, and the one-shot workflow are unchanged.
+
+
+## v1.2.5 Pedagogical Review Closure
+
+Pedagogical Review now closes its own issues through a deliberately small local repair loop rather than a new agent architecture. After the whole-lecture Terra review, only reported targets are repaired, at most three rounds in the fixed order `terra-xhigh -> sol-medium -> sol-high`. Every round rebuilds context from the current lecture; problem targets include the full problem and current solution state. Resolved repairs are applied only to publication/supplement layers, never to immutable teacher source fields. If the third round is still unresolved, Review finishes with a non-blocking note and the workflow continues through Render/PDF/Audit, yielding `PASS_WITH_NOTES` when all other quality checks pass. `derived_solution` publication content is rendered with the `讲义补充推导` label, and an `audited` lecture may be rerendered; stale audit metadata is cleared before the next audit.
+
+
+## v1.2.6 Review Logic Unification
+
+Pedagogical Repair keeps both API and Codex transports, but they now consume one shared business core. The fixed route remains `terra-xhigh -> sol-medium -> sol-high`; context construction, response validation, atomic publication-layer application, source protection, remaining-issue calculation, round status and repair history are shared. Transport failures do not consume a business repair round, while a current model response that exists but is schema-invalid is recorded as `invalid` and the next logical model may be tried. Repair application is atomic: candidate changes are committed only after the full batch passes target/source invariants. The third business round is always terminal; unresolved issues remain non-blocking and continue to Render/PDF/Audit. No planner, state-machine framework, generic review engine, or file-level decomposition was introduced.

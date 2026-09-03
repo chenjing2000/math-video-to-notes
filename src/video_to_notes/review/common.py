@@ -137,6 +137,7 @@ def finalize_review(
     math_summary: dict[str, Any],
     mode: str,
     reviewers: dict[str, Any] | None = None,
+    pedagogical_repair: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Apply the single authoritative review finalization contract."""
     issues = assign_issue_ids(raw_issues)
@@ -165,6 +166,10 @@ def finalize_review(
     lecture["review"]["issues"] = issues
     lecture["review"]["math"] = math_summary
     lecture["review"]["summary"] = summary
+    if pedagogical_repair is not None:
+        lecture["review"]["pedagogical_repair"] = pedagogical_repair
+    else:
+        lecture["review"].pop("pedagogical_repair", None)
     lecture.pop("audit", None)
     lecture["stage"] = "review_draft"
     atomic_write_json(lecture_path, lecture)
@@ -175,6 +180,7 @@ def finalize_review(
 
     blocking_issue = any(
         issue.get("status") == "open"
+        and issue.get("review_type") != "pedagogical"
         and (issue.get("severity") == "error" or issue.get("label") == "possible_teacher_error")
         for issue in issues
     )
@@ -187,6 +193,14 @@ def finalize_review(
                 "message": "Sol High 仍有未解决数学 target；PDF 将保留既有内容并标注未处理完成。",
             }
         )
+    if isinstance(pedagogical_repair, dict) and pedagogical_repair.get("complete_with_unresolved"):
+        notes.append(
+            {
+                "type": "pedagogical_unresolved",
+                "issues": pedagogical_repair.get("unresolved_issue_ids", []),
+                "message": "三级教学局部修复后仍有未解决 issue；继续生成 PDF，并以 PASS_WITH_NOTES 记录。",
+            }
+        )
 
     report: dict[str, Any] = {
         "schema_version": "1.3",
@@ -194,6 +208,7 @@ def finalize_review(
         "mode": mode,
         "issues": summary,
         "math_review": math_summary,
+        "pedagogical_repair": pedagogical_repair or {"resolved": 0, "unresolved": 0, "rounds": []},
         "quality": {
             "complete": not blocking_issue,
             "has_notes": bool(notes),

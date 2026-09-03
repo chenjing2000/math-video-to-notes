@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from ..errors import StageError
+from ..errors import ModelResponseError, StageError, TransportError
 
 
 class LLMProvider(Protocol):
@@ -36,9 +36,9 @@ def parse_json_response(text: str) -> dict[str, Any]:
     try:
         data = json.loads(_extract_json_text(text))
     except json.JSONDecodeError as exc:
-        raise StageError("LLM 返回内容不是有效 JSON。") from exc
+        raise ModelResponseError("LLM 返回内容不是有效 JSON。") from exc
     if not isinstance(data, dict):
-        raise StageError("LLM JSON 根节点必须为 object。")
+        raise ModelResponseError("LLM JSON 根节点必须为 object。")
     return data
 
 
@@ -95,12 +95,12 @@ class OpenAICompatibleProvider:
             with urllib.request.urlopen(req, timeout=self.timeout_seconds) as resp:
                 raw = json.loads(resp.read().decode("utf-8"))
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-            raise StageError(f"LLM HTTP 调用失败: {exc}") from exc
+            raise TransportError(f"LLM HTTP 调用失败: {exc}") from exc
 
         try:
             content = raw["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
-            raise StageError("LLM HTTP 响应缺少 choices[0].message.content。") from exc
+            raise TransportError("LLM HTTP 响应缺少 choices[0].message.content。") from exc
         return parse_json_response(str(content))
 
 
@@ -124,9 +124,9 @@ class CommandProvider:
                 timeout=self.timeout_seconds,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
-            raise StageError(f"LLM command 执行失败: {exc}") from exc
+            raise TransportError(f"LLM command 执行失败: {exc}") from exc
         if proc.returncode != 0:
-            raise StageError(
+            raise TransportError(
                 "LLM command 返回失败："
                 + (proc.stderr.strip() or f"exit={proc.returncode}")
             )
@@ -140,11 +140,11 @@ class FileProvider:
 
     def generate_json(self, *, system: str, user: str, image_paths: list[Path] | None = None) -> dict[str, Any]:
         if self._index >= len(self.response_files):
-            raise StageError("FileProvider 没有足够的响应文件。")
+            raise TransportError("FileProvider 没有足够的响应文件。")
         path = self.response_files[self._index]
         self._index += 1
         if not path.exists():
-            raise StageError(f"FileProvider 响应文件不存在: {path}")
+            raise TransportError(f"FileProvider 响应文件不存在: {path}")
         return parse_json_response(path.read_text(encoding="utf-8"))
 
 

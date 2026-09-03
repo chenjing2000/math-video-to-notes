@@ -25,7 +25,7 @@ STAGE_VERSIONS: dict[str, str] = {
     "evidence": "2",
     "reconstruction": "4",
     "completion": "4",
-    "review": "5",
+    "review": "6",
     "render": "4",
     "audit": "4",
 }

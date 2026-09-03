@@ -40,3 +40,34 @@ def test_template_uses_single_publication_solution_and_unresolved_note_once():
     assert tex.count("本题 GPT sol 未处理完成") == 1
     assert "不应进入 PDF" not in tex
     assert "【审校提示】" not in tex
+
+
+def test_derived_publication_solution_keeps_supplement_label():
+    template_path = resolve_resource_path("package:lecture.tex.j2", default_name="lecture.tex.j2")
+    lecture = {
+        "metadata": {"title": "测试"},
+        "overview": {},
+        "sections": [],
+        "problems": [{
+            "id": "P01",
+            "title": "例题 1",
+            "statement": {"content": "求 $x$。"},
+            "teacher_solution": {"content": "老师原解。"},
+            "publication_solution": {
+                "content": "补充得到 $x=1$。",
+                "source_kind": "derived_solution",
+                "review_status": "verified",
+            },
+            "teacher_answer": {"content": "$1$"},
+            "publication_answer": {"content": "$1$", "review_status": "verified"},
+        }],
+        "figures": [],
+        "supplements": [],
+        "summary": [],
+        "review": {"issues": []},
+    }
+    context = build_render_context(lecture)
+    env = build_environment(template_path)
+    tex = env.get_template(template_path.name).render(**context)
+    assert "【讲义补充推导】" in tex
+    assert "补充得到 $x=1$" in tex

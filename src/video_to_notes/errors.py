@@ -16,3 +16,11 @@ class StateError(VideoToNotesError):
 
 class StageError(VideoToNotesError):
     """Raised when a pipeline stage fails."""
+
+
+class TransportError(StageError):
+    """Raised when an external model transport cannot produce a response."""
+
+
+class ModelResponseError(StageError):
+    """Raised when a model response exists but is not parseable/usable JSON."""

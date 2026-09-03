@@ -325,3 +325,57 @@ review:
     report = json.loads((ws / "reports/review_report.json").read_text(encoding="utf-8"))
     assert report["reviewers"]["math"]["high_escalations"] == 1
     assert report["math_review"]["unresolved"] == 0
+
+
+def test_review_api_pedagogical_repair_with_explicit_file_provider(tmp_path):
+    project_root = Path(__file__).resolve().parents[2]
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(project_root / "src")
+    video = tmp_path / "lesson.mp4"
+    video.write_bytes(b"fake")
+    workspace_root = tmp_path / "workspace"
+
+    pedagogical_response = tmp_path / "pedagogical.json"
+    pedagogical_response.write_text(json.dumps({
+        "issues": [{
+            "target_id": "sec_01",
+            "severity": "info",
+            "label": "clarity",
+            "message": "增加方法归纳。",
+            "source_value": None,
+            "review_value": None,
+        }]
+    }, ensure_ascii=False), encoding="utf-8")
+    repair_response = tmp_path / "repair.json"
+    repair_response.write_text(json.dumps({
+        "repairs": [{
+            "issue_id": "pg_001",
+            "target_id": "sec_01",
+            "status": "resolved",
+            "action": "append_summary",
+            "content": "方法归纳：先识别条件，再组织推导。",
+        }]
+    }, ensure_ascii=False), encoding="utf-8")
+
+    config = tmp_path / "config.yaml"
+    config.write_text(f'''project:\n  workspace_root: "{workspace_root.as_posix()}"\n  project_root: "{project_root.as_posix()}"\n\nreview:\n  factual:\n    enabled: false\n  math:\n    enabled: false\n  pedagogical:\n    enabled: true\n    whole_lecture: true\n    llm:\n      provider: "file"\n      response_files:\n        - "{pedagogical_response.as_posix()}"\n    repair:\n      enabled: true\n      llm:\n        provider: "file"\n        response_files:\n          - "{repair_response.as_posix()}"\n''', encoding="utf-8")
+
+    init = _run(["--config", str(config), "init", str(video)], project_root, env)
+    assert init.returncode == 0, init.stderr
+    ws = workspace_root / "lesson"
+    (ws / "lecture").mkdir(parents=True, exist_ok=True)
+    (ws / "evidence").mkdir(parents=True, exist_ok=True)
+    lecture = {
+        "schema_version": "1.0", "stage": "completion_draft", "metadata": {}, "overview": {},
+        "sections": [{"id": "sec_01", "title": "方法", "blocks": []}],
+        "problems": [], "supplements": [], "figures": [], "summary": [], "review": {"issues": []},
+    }
+    (ws / "lecture" / "lecture.json").write_text(json.dumps(lecture, ensure_ascii=False), encoding="utf-8")
+    (ws / "evidence" / "timeline.json").write_text('{"timeline": []}', encoding="utf-8")
+
+    result = _run(["--config", str(config), "review", "api", str(video)], project_root, env)
+    assert result.returncode == 0, result.stderr
+    reviewed = json.loads((ws / "lecture" / "lecture.json").read_text(encoding="utf-8"))
+    assert reviewed["summary"][0]["content"] == "方法归纳：先识别条件，再组织推导。"
+    assert reviewed["review"]["pedagogical_repair"]["resolved"] == 1
+    assert reviewed["review"]["pedagogical_repair"]["unresolved"] == 0
